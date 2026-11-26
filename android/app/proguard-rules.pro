@@ -12,3 +12,6 @@
 
 # Media3
 -keep class androidx.media3.** { *; }
+
+# Flutter deferred components (not bundled in direct APK)
+-dontwarn com.google.android.play.core.**
