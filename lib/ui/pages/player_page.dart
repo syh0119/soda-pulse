@@ -147,7 +147,7 @@ class _PlayerPageState extends State<PlayerPage>
   Future<void> _openIslandSettings() async {
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => const IslandSettingsPage(),
+        builder: (_) => IslandSettingsPage(bridge: _bridge),
       ),
     );
     if (mounted) {
@@ -172,10 +172,10 @@ class _PlayerPageState extends State<PlayerPage>
                 child: Container(
                   padding: const EdgeInsets.fromLTRB(24, 16, 24, 28),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF141821).withOpacity(0.88),
+                    color: const Color(0xFF141821).withValues(alpha: 0.88),
                     border: Border(
                       top: BorderSide(
-                        color: Colors.white.withOpacity(0.10),
+                        color: Colors.white.withValues(alpha: 0.10),
                       ),
                     ),
                   ),
@@ -186,7 +186,7 @@ class _PlayerPageState extends State<PlayerPage>
                         width: 38.0,
                         height: 4.0,
                         decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.24),
+                          color: Colors.white.withValues(alpha: 0.24),
                           borderRadius: BorderRadius.circular(2.0),
                         ),
                       ),
@@ -216,9 +216,9 @@ class _PlayerPageState extends State<PlayerPage>
                       SliderTheme(
                         data: SliderThemeData(
                           activeTrackColor: widget.accentColor,
-                          inactiveTrackColor: Colors.white.withOpacity(0.16),
+                          inactiveTrackColor: Colors.white.withValues(alpha: 0.16),
                           thumbColor: Colors.white,
-                          overlayColor: widget.accentColor.withOpacity(0.22),
+                          overlayColor: widget.accentColor.withValues(alpha: 0.22),
                           trackHeight: 3.5,
                         ),
                         child: Slider(
@@ -303,7 +303,7 @@ class _PlayerPageState extends State<PlayerPage>
           BackdropFilter(
             filter: ImageFilter.blur(sigmaX: 48.0, sigmaY: 48.0),
             child: Container(
-              color: Colors.black.withOpacity(0.32),
+              color: Colors.black.withValues(alpha: 0.32),
             ),
           ),
           SafeArea(
@@ -358,16 +358,16 @@ class _PlayerPageState extends State<PlayerPage>
               vertical: 5.0,
             ),
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.08),
+              color: Colors.white.withValues(alpha: 0.08),
               borderRadius: BorderRadius.circular(14.0),
               border: Border.all(
-                color: Colors.white.withOpacity(0.12),
+                color: Colors.white.withValues(alpha: 0.12),
               ),
             ),
             child: Text(
               _formatBadgeLabel(lyrics),
               style: TextStyle(
-                color: Colors.white.withOpacity(0.84),
+                color: Colors.white.withValues(alpha: 0.84),
                 fontSize: 11.5,
                 fontWeight: FontWeight.w600,
                 letterSpacing: 0.5,
@@ -383,14 +383,14 @@ class _PlayerPageState extends State<PlayerPage>
                 vertical: 6.0,
               ),
               decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.45),
+                color: Colors.black.withValues(alpha: 0.45),
                 borderRadius: BorderRadius.circular(20.0),
                 border: Border.all(
-                  color: accent.withOpacity(0.45),
+                  color: accent.withValues(alpha: 0.45),
                 ),
                 boxShadow: <BoxShadow>[
                   BoxShadow(
-                    color: accent.withOpacity(0.16),
+                    color: accent.withValues(alpha: 0.16),
                     blurRadius: 12.0,
                   ),
                 ],
@@ -406,7 +406,7 @@ class _PlayerPageState extends State<PlayerPage>
                       color: accent,
                       boxShadow: <BoxShadow>[
                         BoxShadow(
-                          color: accent.withOpacity(0.8),
+                          color: accent.withValues(alpha: 0.8),
                           blurRadius: 6.0,
                         ),
                       ],
@@ -426,7 +426,7 @@ class _PlayerPageState extends State<PlayerPage>
                   Icon(
                     Icons.chevron_right_rounded,
                     size: 15.0,
-                    color: Colors.white.withOpacity(0.7),
+                    color: Colors.white.withValues(alpha: 0.7),
                   ),
                 ],
               ),
@@ -460,12 +460,12 @@ class _PlayerPageState extends State<PlayerPage>
                     borderRadius: BorderRadius.circular(32.0),
                     boxShadow: <BoxShadow>[
                       BoxShadow(
-                        color: accent.withOpacity(0.16 + 0.14 * pulse),
+                        color: accent.withValues(alpha: 0.16 + 0.14 * pulse),
                         blurRadius: 42.0 + 18.0 * pulse,
                         spreadRadius: 2.0 + 4.0 * pulse,
                       ),
                       BoxShadow(
-                        color: Colors.black.withOpacity(0.55),
+                        color: Colors.black.withValues(alpha: 0.55),
                         blurRadius: 28.0,
                         offset: const Offset(0, 14),
                       ),
@@ -483,7 +483,7 @@ class _PlayerPageState extends State<PlayerPage>
                       Image.network(
                         coverUrl,
                         fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) =>
+                        errorBuilder: (context, error, stackTrace) =>
                             _CoverPlaceholder(accentColor: accent),
                       )
                     else
@@ -492,7 +492,7 @@ class _PlayerPageState extends State<PlayerPage>
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(32.0),
                         border: Border.all(
-                          color: Colors.white.withOpacity(0.16),
+                          color: Colors.white.withValues(alpha: 0.16),
                           width: 1.2,
                         ),
                       ),
@@ -508,7 +508,7 @@ class _PlayerPageState extends State<PlayerPage>
               overflow: TextOverflow.ellipsis,
               textAlign: TextAlign.center,
               style: TextStyle(
-                color: accent.withOpacity(0.95),
+                color: accent.withValues(alpha: 0.95),
                 fontSize: 16.0,
                 fontWeight: FontWeight.w600,
                 letterSpacing: 0.3,
@@ -521,7 +521,7 @@ class _PlayerPageState extends State<PlayerPage>
               overflow: TextOverflow.ellipsis,
               textAlign: TextAlign.center,
               style: TextStyle(
-                color: Colors.white.withOpacity(0.45),
+                color: Colors.white.withValues(alpha: 0.45),
                 fontSize: 13.5,
                 fontWeight: FontWeight.w400,
               ),
@@ -543,7 +543,7 @@ class _PlayerPageState extends State<PlayerPage>
           width: selected ? 18.0 : 6.0,
           height: 6.0,
           decoration: BoxDecoration(
-            color: selected ? accent : Colors.white.withOpacity(0.24),
+            color: selected ? accent : Colors.white.withValues(alpha: 0.24),
             borderRadius: BorderRadius.circular(3.0),
           ),
         );
@@ -578,7 +578,7 @@ class _PlayerPageState extends State<PlayerPage>
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
-              color: Colors.white.withOpacity(0.62),
+              color: Colors.white.withValues(alpha: 0.62),
               fontSize: 14.0,
               fontWeight: FontWeight.w500,
             ),
@@ -587,9 +587,9 @@ class _PlayerPageState extends State<PlayerPage>
           SliderTheme(
             data: SliderThemeData(
               activeTrackColor: accent,
-              inactiveTrackColor: Colors.white.withOpacity(0.16),
+              inactiveTrackColor: Colors.white.withValues(alpha: 0.16),
               thumbColor: Colors.white,
-              overlayColor: accent.withOpacity(0.20),
+              overlayColor: accent.withValues(alpha: 0.20),
               trackHeight: 3.2,
               thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6.0),
             ),
@@ -618,7 +618,7 @@ class _PlayerPageState extends State<PlayerPage>
                 Text(
                   _formatDuration(currentPos.round()),
                   style: TextStyle(
-                    color: Colors.white.withOpacity(0.54),
+                    color: Colors.white.withValues(alpha: 0.54),
                     fontSize: 11.5,
                     fontFeatures: const <FontFeature>[
                       FontFeature.tabularFigures(),
@@ -628,7 +628,7 @@ class _PlayerPageState extends State<PlayerPage>
                 Text(
                   _formatDuration(_durationMs),
                   style: TextStyle(
-                    color: Colors.white.withOpacity(0.54),
+                    color: Colors.white.withValues(alpha: 0.54),
                     fontSize: 11.5,
                     fontFeatures: const <FontFeature>[
                       FontFeature.tabularFigures(),
@@ -652,7 +652,7 @@ class _PlayerPageState extends State<PlayerPage>
               IconButton(
                 onPressed: _bridge.skipToPrevious,
                 iconSize: 34.0,
-                color: Colors.white.withOpacity(0.9),
+                color: Colors.white.withValues(alpha: 0.9),
                 icon: const Icon(Icons.skip_previous_rounded),
               ),
               GestureDetector(
@@ -667,12 +667,12 @@ class _PlayerPageState extends State<PlayerPage>
                       end: Alignment.bottomRight,
                       colors: <Color>[
                         accent,
-                        accent.withOpacity(0.75),
+                        accent.withValues(alpha: 0.75),
                       ],
                     ),
                     boxShadow: <BoxShadow>[
                       BoxShadow(
-                        color: accent.withOpacity(0.42),
+                        color: accent.withValues(alpha: 0.42),
                         blurRadius: 22.0,
                         offset: const Offset(0, 6),
                       ),
@@ -690,7 +690,7 @@ class _PlayerPageState extends State<PlayerPage>
               IconButton(
                 onPressed: _bridge.skipToNext,
                 iconSize: 34.0,
-                color: Colors.white.withOpacity(0.9),
+                color: Colors.white.withValues(alpha: 0.9),
                 icon: const Icon(Icons.skip_next_rounded),
               ),
               _GlassIconButton(
@@ -746,7 +746,7 @@ class _SodaDynamicBackground extends StatelessWidget {
                 height: 300.0,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: accentColor.withOpacity(0.18 + 0.08 * t),
+                  color: accentColor.withValues(alpha: 0.18 + 0.08 * t),
                 ),
               ),
             ),
@@ -758,7 +758,7 @@ class _SodaDynamicBackground extends StatelessWidget {
                 height: 260.0,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: const Color(0xFF5B7FFF).withOpacity(0.14 + 0.06 * t),
+                  color: const Color(0xFF5B7FFF).withValues(alpha: 0.14 + 0.06 * t),
                 ),
               ),
             ),
@@ -782,7 +782,7 @@ class _CoverPlaceholder extends StatelessWidget {
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
           colors: <Color>[
-            accentColor.withOpacity(0.32),
+            accentColor.withValues(alpha: 0.32),
             const Color(0xFF171D29),
           ],
         ),
@@ -791,7 +791,7 @@ class _CoverPlaceholder extends StatelessWidget {
         child: Icon(
           Icons.album_rounded,
           size: 86.0,
-          color: Colors.white.withOpacity(0.38),
+          color: Colors.white.withValues(alpha: 0.38),
         ),
       ),
     );
@@ -823,18 +823,18 @@ class _GlassIconButton extends StatelessWidget {
         decoration: BoxDecoration(
           shape: BoxShape.circle,
           color: isActive
-              ? activeColor.withOpacity(0.18)
-              : Colors.white.withOpacity(0.08),
+              ? activeColor.withValues(alpha: 0.18)
+              : Colors.white.withValues(alpha: 0.08),
           border: Border.all(
             color: isActive
-                ? activeColor.withOpacity(0.55)
-                : Colors.white.withOpacity(0.12),
+                ? activeColor.withValues(alpha: 0.55)
+                : Colors.white.withValues(alpha: 0.12),
           ),
         ),
         child: Icon(
           icon,
           size: 20.0,
-          color: isActive ? activeColor : Colors.white.withOpacity(0.86),
+          color: isActive ? activeColor : Colors.white.withValues(alpha: 0.86),
         ),
       ),
     );
@@ -864,16 +864,16 @@ class _OffsetQuickButton extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 18.0, vertical: 9.0),
         decoration: BoxDecoration(
-          color: (accentColor ?? Colors.white).withOpacity(0.12),
+          color: (accentColor ?? Colors.white).withValues(alpha: 0.12),
           borderRadius: BorderRadius.circular(18.0),
           border: Border.all(
-            color: (accentColor ?? Colors.white).withOpacity(0.24),
+            color: (accentColor ?? Colors.white).withValues(alpha: 0.24),
           ),
         ),
         child: Text(
           label,
           style: TextStyle(
-            color: accentColor ?? Colors.white.withOpacity(0.9),
+            color: accentColor ?? Colors.white.withValues(alpha: 0.9),
             fontSize: 13.0,
             fontWeight: FontWeight.w600,
           ),

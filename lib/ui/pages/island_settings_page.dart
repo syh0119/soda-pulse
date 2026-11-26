@@ -233,8 +233,8 @@ class _IslandSettingsPageState extends State<IslandSettingsPage> {
                 shape: BoxShape.circle,
                 gradient: RadialGradient(
                   colors: <Color>[
-                    _sodaCyan.withOpacity(0.18),
-                    _sodaCyan.withOpacity(0.0),
+                    _sodaCyan.withValues(alpha: 0.18),
+                    _sodaCyan.withValues(alpha: 0.0),
                   ],
                 ),
               ),
@@ -250,8 +250,8 @@ class _IslandSettingsPageState extends State<IslandSettingsPage> {
                 shape: BoxShape.circle,
                 gradient: RadialGradient(
                   colors: <Color>[
-                    _sodaMint.withOpacity(0.14),
-                    _sodaMint.withOpacity(0.0),
+                    _sodaMint.withValues(alpha: 0.14),
+                    _sodaMint.withValues(alpha: 0.0),
                   ],
                 ),
               ),
@@ -267,8 +267,8 @@ class _IslandSettingsPageState extends State<IslandSettingsPage> {
                 shape: BoxShape.circle,
                 gradient: RadialGradient(
                   colors: <Color>[
-                    _sodaIndigo.withOpacity(0.16),
-                    _sodaIndigo.withOpacity(0.0),
+                    _sodaIndigo.withValues(alpha: 0.16),
+                    _sodaIndigo.withValues(alpha: 0.0),
                   ],
                 ),
               ),
@@ -318,9 +318,9 @@ class _IslandSettingsPageState extends State<IslandSettingsPage> {
       margin: const EdgeInsets.only(bottom: 16),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: _sodaRose.withOpacity(0.14),
+        color: _sodaRose.withValues(alpha: 0.14),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: _sodaRose.withOpacity(0.35)),
+        border: Border.all(color: _sodaRose.withValues(alpha: 0.35)),
       ),
       child: Row(
         children: <Widget>[
@@ -346,12 +346,12 @@ class _IslandSettingsPageState extends State<IslandSettingsPage> {
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: _bgCard.withOpacity(0.86),
+        color: _bgCard.withValues(alpha: 0.86),
         borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: Colors.white.withOpacity(0.08)),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
         boxShadow: <BoxShadow>[
           BoxShadow(
-            color: Colors.black.withOpacity(0.28),
+            color: Colors.black.withValues(alpha: 0.28),
             blurRadius: 18,
             offset: const Offset(0, 8),
           ),
@@ -365,7 +365,7 @@ class _IslandSettingsPageState extends State<IslandSettingsPage> {
               Container(
                 padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
-                  color: _sodaCyan.withOpacity(0.14),
+                  color: _sodaCyan.withValues(alpha: 0.14),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Icon(icon, color: _sodaCyan, size: 18),
@@ -399,9 +399,9 @@ class _IslandSettingsPageState extends State<IslandSettingsPage> {
       trailing: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
         decoration: BoxDecoration(
-          color: _sodaMint.withOpacity(0.14),
+          color: _sodaMint.withValues(alpha: 0.14),
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: _sodaMint.withOpacity(0.35)),
+          border: Border.all(color: _sodaMint.withValues(alpha: 0.35)),
         ),
         child: Text(
           status == null ? '检测中' : 'SDK ${status.androidSdk}',
@@ -437,9 +437,9 @@ class _IslandSettingsPageState extends State<IslandSettingsPage> {
               ),
               _buildDiagRow(
                 '最近发布结果',
-                status.lastPublishResult.toString().isEmpty
+                status.lastPublishResult.isEmpty
                     ? '暂无记录'
-                    : '${status.lastPublishResult}',
+                    : status.lastPublishResult,
               ),
               const SizedBox(height: 10),
               Wrap(
@@ -466,7 +466,7 @@ class _IslandSettingsPageState extends State<IslandSettingsPage> {
             child: Text(
               label,
               style: TextStyle(
-                color: Colors.white.withOpacity(0.56),
+                color: Colors.white.withValues(alpha: 0.56),
                 fontSize: 13,
               ),
             ),
@@ -492,9 +492,9 @@ class _IslandSettingsPageState extends State<IslandSettingsPage> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.12),
+        color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withOpacity(0.35)),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -557,9 +557,9 @@ class _IslandSettingsPageState extends State<IslandSettingsPage> {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: _bgCardElevated.withOpacity(0.75),
+        color: _bgCardElevated.withValues(alpha: 0.75),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white.withOpacity(0.06)),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
       ),
       child: Row(
         children: <Widget>[
@@ -579,7 +579,7 @@ class _IslandSettingsPageState extends State<IslandSettingsPage> {
                 Text(
                   subtitle,
                   style: TextStyle(
-                    color: Colors.white.withOpacity(0.6),
+                    color: Colors.white.withValues(alpha: 0.6),
                     fontSize: 12,
                   ),
                 ),
@@ -591,8 +591,8 @@ class _IslandSettingsPageState extends State<IslandSettingsPage> {
             onPressed: onPressed,
             style: FilledButton.styleFrom(
               backgroundColor: granted
-                  ? _sodaMint.withOpacity(0.2)
-                  : _sodaCyan.withOpacity(0.24),
+                  ? _sodaMint.withValues(alpha: 0.2)
+                  : _sodaCyan.withValues(alpha: 0.24),
               foregroundColor: granted ? _sodaMint : _sodaCyan,
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
               shape: RoundedRectangleBorder(
@@ -625,13 +625,13 @@ class _IslandSettingsPageState extends State<IslandSettingsPage> {
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
                 color: selected
-                    ? _sodaCyan.withOpacity(0.14)
-                    : _bgCardElevated.withOpacity(0.65),
+                    ? _sodaCyan.withValues(alpha: 0.14)
+                    : _bgCardElevated.withValues(alpha: 0.65),
                 borderRadius: BorderRadius.circular(16),
                 border: Border.all(
                   color: selected
-                      ? _sodaCyan.withOpacity(0.75)
-                      : Colors.white.withOpacity(0.06),
+                      ? _sodaCyan.withValues(alpha: 0.75)
+                      : Colors.white.withValues(alpha: 0.06),
                   width: selected ? 1.4 : 1.0,
                 ),
               ),
@@ -639,7 +639,7 @@ class _IslandSettingsPageState extends State<IslandSettingsPage> {
                 children: <Widget>[
                   Icon(
                     option.icon,
-                    color: selected ? _sodaCyan : Colors.white.withOpacity(0.65),
+                    color: selected ? _sodaCyan : Colors.white.withValues(alpha: 0.65),
                     size: 22,
                   ),
                   const SizedBox(width: 12),
@@ -659,7 +659,7 @@ class _IslandSettingsPageState extends State<IslandSettingsPage> {
                         Text(
                           option.subtitle,
                           style: TextStyle(
-                            color: Colors.white.withOpacity(0.55),
+                            color: Colors.white.withValues(alpha: 0.55),
                             fontSize: 12,
                           ),
                         ),
@@ -688,14 +688,14 @@ class _IslandSettingsPageState extends State<IslandSettingsPage> {
       children: <Widget>[
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
-          activeColor: _sodaCyan,
+          activeThumbColor: _sodaCyan,
           title: const Text(
             '启用悬浮窗歌词',
             style: TextStyle(color: Colors.white, fontSize: 14),
           ),
           subtitle: Text(
             '在桌面与第三方应用上方显示独立歌词条',
-            style: TextStyle(color: Colors.white.withOpacity(0.55), fontSize: 12),
+            style: TextStyle(color: Colors.white.withValues(alpha: 0.55), fontSize: 12),
           ),
           value: _overlayEnabled,
           onChanged: (value) {
@@ -705,14 +705,14 @@ class _IslandSettingsPageState extends State<IslandSettingsPage> {
         ),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
-          activeColor: _sodaMint,
+          activeThumbColor: _sodaMint,
           title: const Text(
             '锁定悬浮窗位置',
             style: TextStyle(color: Colors.white, fontSize: 14),
           ),
           subtitle: Text(
             '开启后允许触摸穿透，防止游戏或刷视频时误触拖动',
-            style: TextStyle(color: Colors.white.withOpacity(0.55), fontSize: 12),
+            style: TextStyle(color: Colors.white.withValues(alpha: 0.55), fontSize: 12),
           ),
           value: _overlayLocked,
           onChanged: (value) {
@@ -791,7 +791,7 @@ class _IslandSettingsPageState extends State<IslandSettingsPage> {
         Text(
           title,
           style: TextStyle(
-            color: Colors.white.withOpacity(0.8),
+            color: Colors.white.withValues(alpha: 0.8),
             fontSize: 13,
             fontWeight: FontWeight.w500,
           ),
@@ -813,7 +813,7 @@ class _IslandSettingsPageState extends State<IslandSettingsPage> {
       onPressed: onTap,
       style: OutlinedButton.styleFrom(
         foregroundColor: Colors.white,
-        side: BorderSide(color: Colors.white.withOpacity(0.14)),
+        side: BorderSide(color: Colors.white.withValues(alpha: 0.14)),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12),
         ),

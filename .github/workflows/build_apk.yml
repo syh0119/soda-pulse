@@ -15,11 +15,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Java 17
-        uses: actions/setup-java@v4
+      - name: Setup Java 21
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -27,17 +27,27 @@ jobs:
           channel: 'stable'
           cache: true
 
+      - name: Show Flutter version
+        run: flutter --version
+
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Setup Gradle 8.10.2
+      - name: Generate Android local.properties
+        run: |
+          FLUTTER_SDK="$(dirname "$(dirname "$(which flutter)")")"
+          echo "flutter.sdk=$FLUTTER_SDK" > android/local.properties
+          echo "sdk.dir=${ANDROID_HOME:-$ANDROID_SDK_ROOT}" >> android/local.properties
+          cat android/local.properties
+
+      - name: Setup Gradle 9.5.0
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.10.2'
+          gradle-version: '9.5.0'
 
       - name: Generate Gradle Wrapper
         working-directory: android
-        run: gradle wrapper --gradle-version 8.10.2
+        run: gradle wrapper --gradle-version 9.5.0 --distribution-type all
 
       - name: Analyze project
         run: flutter analyze
