@@ -559,6 +559,80 @@ class NativePlayerBridge extends ChangeNotifier {
     await _methodChannel.invokeMethod<void>('savePreferences', prefs);
   }
 
+  Future<void> setEqParams(List<double> gains, double preGain) async {
+    await _methodChannel.invokeMethod<void>(
+      'setEqParams',
+      <String, dynamic>{
+        'gains': gains,
+        'preGain': preGain,
+      },
+    );
+  }
+
+  Future<void> setPlaybackSpeed(double speed) async {
+    await _methodChannel.invokeMethod<void>(
+      'setPlaybackSpeed',
+      <String, dynamic>{'speed': speed},
+    );
+  }
+
+  Future<void> setFavorite(bool favorite) async {
+    await _methodChannel.invokeMethod<void>(
+      'setFavorite',
+      <String, dynamic>{'favorite': favorite},
+    );
+  }
+
+  Future<Map<String, dynamic>> getCoverArtInfo(String? uri) async {
+    if (uri == null || uri.isEmpty) {
+      return const <String, dynamic>{};
+    }
+    final dynamic result = await _methodChannel.invokeMethod<dynamic>(
+      'getCoverArtInfo',
+      <String, dynamic>{'uri': uri},
+    );
+    if (result is Map) {
+      return Map<String, dynamic>.from(result);
+    }
+    return const <String, dynamic>{};
+  }
+
+  Future<void> shareText(String text, {String? subject}) async {
+    await _methodChannel.invokeMethod<void>(
+      'shareText',
+      <String, dynamic>{
+        'text': text,
+        if (subject != null) 'subject': subject,
+      },
+    );
+  }
+
+  Future<Map<String, String>?> pickTextFile() async {
+    final dynamic result =
+        await _methodChannel.invokeMethod<dynamic>('pickTextFile');
+    if (result is Map) {
+      return <String, String>{
+        'name': (result['name'] ?? 'file.txt').toString(),
+        'content': (result['content'] ?? '').toString(),
+      };
+    }
+    return null;
+  }
+
+  Future<String?> exportTextFile(String fileName, String content) async {
+    final dynamic result = await _methodChannel.invokeMethod<dynamic>(
+      'exportTextFile',
+      <String, dynamic>{
+        'fileName': fileName,
+        'content': content,
+      },
+    );
+    if (result is Map) {
+      return result['path']?.toString();
+    }
+    return null;
+  }
+
   @override
   void dispose() {
     _eventSubscription?.cancel();
