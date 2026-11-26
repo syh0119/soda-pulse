@@ -1,15 +1,21 @@
 package com.sodapulse.music
 
 import android.Manifest
+import android.app.Activity
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.os.Build
+import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.provider.OpenableColumns
+import android.view.WindowManager
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
@@ -17,6 +23,7 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import java.io.File
 import java.util.concurrent.Executors
 
 class MainActivity : FlutterActivity() {
@@ -26,6 +33,7 @@ class MainActivity : FlutterActivity() {
         private const val EVENT_CHANNEL = "com.sodapulse.music/events"
         private const val PREFS_NAME = "sodapulse_prefs"
         private const val REQUEST_PERMISSIONS_CODE = 1001
+        private const val REQUEST_PICK_TEXT_FILE = 1002
     }
 
     private val executor = Executors.newCachedThreadPool()
@@ -36,6 +44,31 @@ class MainActivity : FlutterActivity() {
     private var isBound = false
     private var isBinding = false
     private var pendingPermissionResult: MethodChannel.Result? = null
+    private var pendingPickFileResult: MethodChannel.Result? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false)
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = (
+                android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                    android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                    android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                )
+        }
+        @Suppress("DEPRECATION")
+        window.statusBarColor = Color.TRANSPARENT
+        @Suppress("DEPRECATION")
+        window.navigationBarColor = Color.TRANSPARENT
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val lp = window.attributes
+            lp.layoutInDisplayCutoutMode =
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            window.attributes = lp
+        }
+    }
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -275,6 +308,89 @@ class MainActivity : FlutterActivity() {
                 result.success(true)
             }
 
+            "setEqParams" -> {
+                val gainsRaw = call.argument<List<*>>("gains") ?: emptyList<Any?>()
+                val preGain = (call.argument<Number>("preGain"))?.toFloat() ?: 0f
+                val gains = FloatArray(5) { idx ->
+                    (gainsRaw.getOrNull(idx) as? Number)?.toFloat() ?: 0f
+                }
+                SodaEqAudioProcessor.setParams(gains, preGain)
+                result.success(true)
+            }
+
+            "setPlaybackSpeed" -> {
+                val speed = (call.argument<Number>("speed"))?.toFloat() ?: 1.0f
+                withPlaybackService(startForeground = false) { service ->
+                    service.setPlaybackSpeed(speed)
+                    result.success(true)
+                }
+            }
+
+            "setFavorite" -> {
+                val favorite = call.argument<Boolean>("favorite") ?: false
+                withPlaybackService(startForeground = false) { service ->
+                    service.setFavorite(favorite)
+                    result.success(true)
+                }
+            }
+
+            "getCoverArtInfo" -> {
+                val uri = call.argument<String>("uri")
+                executor.execute {
+                    try {
+                        val info = LocalLibraryScanner.getCoverArtInfo(applicationContext, uri)
+                        mainHandler.post { result.success(info) }
+                    } catch (e: Exception) {
+                        mainHandler.post { result.success(mapOf("path" to null, "color" to null)) }
+                    }
+                }
+            }
+
+            "shareText" -> {
+                val text = call.argument<String>("text") ?: ""
+                val subject = call.argument<String>("subject")
+                try {
+                    val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TEXT, text)
+                        if (!subject.isNullOrBlank()) {
+                            putExtra(Intent.EXTRA_SUBJECT, subject)
+                        }
+                    }
+                    startActivity(Intent.createChooser(sendIntent, "分享到"))
+                    result.success(true)
+                } catch (e: Exception) {
+                    result.error("SHARE_ERROR", e.message, null)
+                }
+            }
+
+            "pickTextFile" -> {
+                pendingPickFileResult?.success(null)
+                pendingPickFileResult = result
+                val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "*/*"
+                }
+                @Suppress("DEPRECATION")
+                startActivityForResult(intent, REQUEST_PICK_TEXT_FILE)
+            }
+
+            "exportTextFile" -> {
+                val fileName = call.argument<String>("fileName") ?: "sodapulse_backup.json"
+                val content = call.argument<String>("content") ?: ""
+                executor.execute {
+                    try {
+                        val dir = getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: filesDir
+                        if (!dir.exists()) dir.mkdirs()
+                        val outFile = File(dir, fileName)
+                        outFile.writeText(content, Charsets.UTF_8)
+                        mainHandler.post { result.success(mapOf("path" to outFile.absolutePath)) }
+                    } catch (e: Exception) {
+                        mainHandler.post { result.error("EXPORT_ERROR", e.message, null) }
+                    }
+                }
+            }
+
             else -> result.notImplemented()
         }
     }
@@ -364,9 +480,48 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        @Suppress("DEPRECATION")
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_PICK_TEXT_FILE) {
+            val res = pendingPickFileResult
+            pendingPickFileResult = null
+            if (res == null) return
+            val uri = if (resultCode == Activity.RESULT_OK) data?.data else null
+            if (uri == null) {
+                res.success(null)
+                return
+            }
+            executor.execute {
+                try {
+                    var displayName = "file.txt"
+                    contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                        if (c.moveToFirst()) {
+                            val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                            if (idx >= 0) {
+                                displayName = c.getString(idx) ?: displayName
+                            }
+                        }
+                    }
+                    val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: ByteArray(0)
+                    if (bytes.size > 5 * 1024 * 1024) {
+                        mainHandler.post { res.error("FILE_TOO_LARGE", "文件超过 5MB", null) }
+                        return@execute
+                    }
+                    val text = bytes.toString(Charsets.UTF_8)
+                    mainHandler.post { res.success(mapOf("name" to displayName, "content" to text)) }
+                } catch (e: Exception) {
+                    mainHandler.post { res.error("READ_FILE_ERROR", e.message, null) }
+                }
+            }
+        }
+    }
+
     override fun onDestroy() {
         pendingServiceActions.clear()
         pendingPermissionResult = null
+        pendingPickFileResult = null
         if (isBound || isBinding) {
             try {
                 unbindService(serviceConnection)
