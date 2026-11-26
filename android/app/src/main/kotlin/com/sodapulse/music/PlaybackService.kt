@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
 import android.graphics.drawable.Icon
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
@@ -27,13 +28,19 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
+import androidx.annotation.OptIn
 import androidx.core.content.ContextCompat
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
 import java.io.File
+import java.util.concurrent.Executors
 
 class PlaybackService : Service() {
 
@@ -45,6 +52,7 @@ class PlaybackService : Service() {
         private const val ACTION_PREV = "com.sodapulse.music.ACTION_PREV"
         private const val ACTION_PLAY_PAUSE = "com.sodapulse.music.ACTION_PLAY_PAUSE"
         private const val ACTION_NEXT = "com.sodapulse.music.ACTION_NEXT"
+        private const val ACTION_FAVORITE = "com.sodapulse.music.ACTION_FAVORITE"
         private const val ACTION_STOP = "com.sodapulse.music.ACTION_STOP"
 
         private const val TICK_INTERVAL_MS = 50L
@@ -66,6 +74,7 @@ class PlaybackService : Service() {
 
     private val localBinder = LocalBinder()
     private val tickHandler = Handler(Looper.getMainLooper())
+    private val coverExecutor = Executors.newSingleThreadExecutor()
 
     private lateinit var player: ExoPlayer
     private lateinit var mediaSession: MediaSession
@@ -82,6 +91,10 @@ class PlaybackService : Service() {
     private var currentArtist: String = ""
     private var currentAlbum: String = ""
     private var currentDurationMs: Long = 0L
+    private var currentCoverUri: String? = null
+    private var currentFavorite: Boolean = false
+    private var coverBitmap: Bitmap? = null
+    private var lastLyricInfoJson: String? = null
 
     private var queueTracks: List<QueueTrack> = emptyList()
     private var currentQueueIndex: Int = -1
@@ -231,7 +244,19 @@ class PlaybackService : Service() {
             .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
             .build()
 
-        player = ExoPlayer.Builder(this)
+        val renderersFactory = @OptIn(UnstableApi::class) object : DefaultRenderersFactory(this) {
+            override fun buildAudioSink(
+                context: Context,
+                enableFloatOutput: Boolean,
+                enableAudioTrackPlaybackParams: Boolean
+            ): AudioSink {
+                return DefaultAudioSink.Builder(context)
+                    .setAudioProcessors(arrayOf(SodaEqAudioProcessor()))
+                    .build()
+            }
+        }
+
+        player = ExoPlayer.Builder(this, renderersFactory)
             .setAudioAttributes(media3AudioAttributes, false)
             .build()
         player.addListener(playerListener)
@@ -305,6 +330,7 @@ class PlaybackService : Service() {
             ACTION_PREV -> previous()
             ACTION_PLAY_PAUSE -> togglePlay()
             ACTION_NEXT -> next()
+            ACTION_FAVORITE -> toggleFavoriteAction()
             ACTION_STOP -> stopPlayback()
         }
         return START_NOT_STICKY
@@ -318,6 +344,7 @@ class PlaybackService : Service() {
         }
         abandonAudioFocus()
         lyricRouter.release()
+        coverExecutor.shutdownNow()
         KaraokeOverlayController.hide()
         mediaSession.isActive = false
         mediaSession.release()
@@ -343,12 +370,34 @@ class PlaybackService : Service() {
         val artist = (trackMap["artist"] as? String) ?: ""
         val album = (trackMap["album"] as? String) ?: ""
         val durationMs = (trackMap["durationMs"] as? Number)?.toLong() ?: 0L
+        val coverUri = (trackMap["albumArtUri"] as? String)?.takeIf { it.isNotBlank() }
+        val isFav = (trackMap["isFavorite"] as? Boolean) ?: false
 
         currentTrackId = id
         currentTitle = title
         currentArtist = artist
         currentAlbum = album
         currentDurationMs = durationMs
+        currentCoverUri = coverUri
+        currentFavorite = isFav
+        coverBitmap = null
+        lastLyricInfoJson = null
+
+        if (coverUri != null) {
+            val targetTrackId = id
+            coverExecutor.execute {
+                val bmp = LocalLibraryScanner.loadCoverBitmap(this, coverUri, 512)
+                if (bmp != null) {
+                    tickHandler.post {
+                        if (currentTrackId == targetTrackId) {
+                            coverBitmap = bmp
+                            updateMediaMetadata(lyricInfoJson = null)
+                            updateNotification(tickerText = null, onlyUpdate = true)
+                        }
+                    }
+                }
+            }
+        }
 
         val mediaUri = resolveMediaUri(uriRaw)
         if (mediaUri != null) {
@@ -488,6 +537,27 @@ class PlaybackService : Service() {
         publishLyricStatus()
     }
 
+    fun setFavorite(favorite: Boolean) {
+        if (currentFavorite != favorite) {
+            currentFavorite = favorite
+            updateNotification(tickerText = null, onlyUpdate = true)
+        }
+    }
+
+    private fun toggleFavoriteAction() {
+        currentFavorite = !currentFavorite
+        updateNotification(tickerText = null, onlyUpdate = true)
+        PlayerServiceBridge.sendAction("favorite", mapOf("trackId" to currentTrackId))
+    }
+
+    fun setPlaybackSpeed(speed: Float) {
+        if (!::player.isInitialized) return
+        val clamped = speed.coerceIn(0.5f, 2.0f)
+        player.setPlaybackSpeed(clamped)
+        updateMediaSessionPlaybackState()
+        pushPlaybackState()
+    }
+
     fun setLyricOffset(offsetMs: Long) {
         lyricOffsetMs = offsetMs
         if (::player.isInitialized) {
@@ -578,9 +648,18 @@ class PlaybackService : Service() {
         if (duration > 0L) {
             builder.putLong(MediaMetadata.METADATA_KEY_DURATION, duration)
         }
+        coverBitmap?.let { bmp ->
+            builder.putBitmap(MediaMetadata.METADATA_KEY_ART, bmp)
+            builder.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, bmp)
+            builder.putBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON, bmp)
+        }
         if (!lyricInfoJson.isNullOrBlank()) {
+            lastLyricInfoJson = lyricInfoJson
+        }
+        val effectiveLyricJson = lastLyricInfoJson
+        if (!effectiveLyricJson.isNullOrBlank()) {
             try {
-                builder.putString("lyricInfo", lyricInfoJson)
+                builder.putString("lyricInfo", effectiveLyricJson)
             } catch (_: Exception) {
             }
         }
@@ -710,6 +789,15 @@ class PlaybackService : Service() {
             buildServicePendingIntent(ACTION_NEXT, 3)
         ).build()
 
+        val favAction = Notification.Action.Builder(
+            Icon.createWithResource(
+                this,
+                if (currentFavorite) R.drawable.ic_noti_heart_filled else R.drawable.ic_noti_heart_outline
+            ),
+            "Favorite",
+            buildServicePendingIntent(ACTION_FAVORITE, 4)
+        ).build()
+
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, CHANNEL_ID)
         } else {
@@ -727,11 +815,14 @@ class PlaybackService : Service() {
             .addAction(prevAction)
             .addAction(playPauseAction)
             .addAction(nextAction)
+            .addAction(favAction)
             .setStyle(
                 Notification.MediaStyle()
                     .setMediaSession(mediaSession.sessionToken)
                     .setShowActionsInCompactView(0, 1, 2)
             )
+
+        coverBitmap?.let { builder.setLargeIcon(it) }
 
         if (currentAlbum.isNotBlank()) {
             builder.setSubText(currentAlbum)
