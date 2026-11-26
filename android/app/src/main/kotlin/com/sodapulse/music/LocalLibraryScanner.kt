@@ -2,13 +2,21 @@ package com.sodapulse.music
 
 import android.content.ContentUris
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.provider.MediaStore
+import android.util.Size
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.security.MessageDigest
 import kotlin.math.PI
 import kotlin.math.sin
 
@@ -310,5 +318,250 @@ object LocalLibraryScanner {
             "roma" to null,
             "source" to "none"
         )
+    }
+
+    fun loadCoverBitmap(context: Context, uriString: String?, maxSize: Int = 512): Bitmap? {
+        if (uriString.isNullOrBlank() || maxSize <= 0) return null
+        val trimmed = uriString.trim()
+
+        fun calculateInSampleSize(width: Int, height: Int): Int {
+            var inSampleSize = 1
+            val minDim = minOf(width, height)
+            while (minDim / (inSampleSize * 2) >= maxSize) {
+                inSampleSize *= 2
+            }
+            return inSampleSize
+        }
+
+        val decoded: Bitmap? = try {
+            when {
+                trimmed.startsWith("http://", ignoreCase = true) ||
+                    trimmed.startsWith("https://", ignoreCase = true) -> {
+                    var connection: HttpURLConnection? = null
+                    try {
+                        connection = (URL(trimmed).openConnection() as HttpURLConnection).apply {
+                            connectTimeout = 5000
+                            readTimeout = 5000
+                            instanceFollowRedirects = true
+                            setRequestProperty("User-Agent", "Mozilla/5.0")
+                        }
+                        if (connection.responseCode !in 200..299) {
+                            null
+                        } else {
+                            val bytes = connection.inputStream.use { it.readBytes() }
+                            val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, boundsOpts)
+                            if (boundsOpts.outWidth <= 0 || boundsOpts.outHeight <= 0) {
+                                null
+                            } else {
+                                val decodeOpts = BitmapFactory.Options().apply {
+                                    inSampleSize = calculateInSampleSize(boundsOpts.outWidth, boundsOpts.outHeight)
+                                }
+                                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts)
+                            }
+                        }
+                    } finally {
+                        connection?.disconnect()
+                    }
+                }
+
+                trimmed.startsWith("content://", ignoreCase = true) -> {
+                    val uri = Uri.parse(trimmed)
+                    var bmp: Bitmap? = try {
+                        val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        context.contentResolver.openInputStream(uri)?.use {
+                            BitmapFactory.decodeStream(it, null, boundsOpts)
+                        }
+                        if (boundsOpts.outWidth > 0 && boundsOpts.outHeight > 0) {
+                            val decodeOpts = BitmapFactory.Options().apply {
+                                inSampleSize = calculateInSampleSize(boundsOpts.outWidth, boundsOpts.outHeight)
+                            }
+                            context.contentResolver.openInputStream(uri)?.use {
+                                BitmapFactory.decodeStream(it, null, decodeOpts)
+                            }
+                        } else {
+                            null
+                        }
+                    } catch (_: Exception) {
+                        null
+                    }
+
+                    if (bmp == null &&
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                        trimmed.startsWith("content://media/external/audio/albumart", ignoreCase = true)
+                    ) {
+                        bmp = try {
+                            context.contentResolver.loadThumbnail(uri, Size(maxSize, maxSize), null)
+                        } catch (_: Exception) {
+                            null
+                        }
+                    }
+                    bmp
+                }
+
+                trimmed.startsWith("file://", ignoreCase = true) || trimmed.startsWith("/") -> {
+                    val path = if (trimmed.startsWith("file://", ignoreCase = true)) {
+                        Uri.parse(trimmed).path
+                    } else {
+                        trimmed
+                    }
+                    if (path.isNullOrBlank()) {
+                        null
+                    } else {
+                        val file = File(path)
+                        if (!file.exists() || !file.isFile) {
+                            null
+                        } else {
+                            val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                            BitmapFactory.decodeFile(path, boundsOpts)
+                            if (boundsOpts.outWidth <= 0 || boundsOpts.outHeight <= 0) {
+                                null
+                            } else {
+                                val decodeOpts = BitmapFactory.Options().apply {
+                                    inSampleSize = calculateInSampleSize(boundsOpts.outWidth, boundsOpts.outHeight)
+                                }
+                                BitmapFactory.decodeFile(path, decodeOpts)
+                            }
+                        }
+                    }
+                }
+
+                else -> null
+            }
+        } catch (_: OutOfMemoryError) {
+            null
+        } catch (_: Exception) {
+            null
+        }
+
+        if (decoded == null) return null
+
+        return try {
+            val cropSize = minOf(decoded.width, decoded.height)
+            if (cropSize <= 0) {
+                decoded.recycle()
+                return null
+            }
+            val x = (decoded.width - cropSize) / 2
+            val y = (decoded.height - cropSize) / 2
+            val squared = if (x == 0 && y == 0 && decoded.width == decoded.height) {
+                decoded
+            } else {
+                Bitmap.createBitmap(decoded, x, y, cropSize, cropSize).also {
+                    if (it !== decoded) decoded.recycle()
+                }
+            }
+            if (squared.width > maxSize || squared.height > maxSize) {
+                Bitmap.createScaledBitmap(squared, maxSize, maxSize, true).also {
+                    if (it !== squared) squared.recycle()
+                }
+            } else {
+                squared
+            }
+        } catch (_: OutOfMemoryError) {
+            decoded.recycle()
+            null
+        } catch (_: Exception) {
+            decoded.recycle()
+            null
+        }
+    }
+
+    fun getCoverArtInfo(context: Context, uriString: String?): Map<String, Any?> {
+        if (uriString.isNullOrBlank()) {
+            return mapOf("path" to null, "color" to null)
+        }
+
+        val sha256Hex = MessageDigest.getInstance("SHA-256")
+            .digest(uriString.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+
+        val artDir = File(context.cacheDir, "art")
+        if (!artDir.exists()) {
+            artDir.mkdirs()
+        }
+        val cacheFile = File(artDir, "$sha256Hex.jpg")
+
+        var bitmap: Bitmap? = if (cacheFile.exists() && cacheFile.length() > 0) {
+            try {
+                BitmapFactory.decodeFile(cacheFile.absolutePath)
+            } catch (_: Exception) {
+                null
+            }
+        } else {
+            null
+        }
+
+        if (bitmap == null) {
+            bitmap = loadCoverBitmap(context, uriString, 512)
+                ?: return mapOf("path" to null, "color" to null)
+            try {
+                FileOutputStream(cacheFile).use { out ->
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
+                }
+            } catch (_: Exception) {
+                bitmap.recycle()
+                return mapOf("path" to null, "color" to null)
+            }
+        }
+
+        val dominantColor = try {
+            val sampleSize = 24
+            val small = Bitmap.createScaledBitmap(bitmap, sampleSize, sampleSize, true)
+            val pixels = IntArray(sampleSize * sampleSize)
+            small.getPixels(pixels, 0, sampleSize, 0, 0, sampleSize, sampleSize)
+            if (small !== bitmap) {
+                small.recycle()
+            }
+
+            val bucketCount = 24
+            val bucketWeight = FloatArray(bucketCount)
+            val bucketR = FloatArray(bucketCount)
+            val bucketG = FloatArray(bucketCount)
+            val bucketB = FloatArray(bucketCount)
+            val bucketPixels = IntArray(bucketCount)
+            val hsv = FloatArray(3)
+
+            for (pixel in pixels) {
+                if (Color.alpha(pixel) < 128) continue
+                Color.colorToHSV(pixel, hsv)
+                val hue = hsv[0]
+                val sat = hsv[1]
+                val value = hsv[2]
+                if (sat < 0.25f || value < 0.15f || (value > 0.95f && sat < 0.15f)) continue
+
+                val bucket = ((hue / 360f) * bucketCount).toInt().coerceIn(0, bucketCount - 1)
+                val weight = sat * (0.5f + value * 0.5f)
+                bucketWeight[bucket] += weight
+                bucketR[bucket] += Color.red(pixel) * weight
+                bucketG[bucket] += Color.green(pixel) * weight
+                bucketB[bucket] += Color.blue(pixel) * weight
+                bucketPixels[bucket]++
+            }
+
+            var bestBucket = -1
+            var bestWeight = 0f
+            for (i in 0 until bucketCount) {
+                if (bucketPixels[i] > 0 && bucketWeight[i] > bestWeight) {
+                    bestWeight = bucketWeight[i]
+                    bestBucket = i
+                }
+            }
+
+            if (bestBucket >= 0) {
+                val r = (bucketR[bestBucket] / bestWeight).toInt().coerceIn(0, 255)
+                val g = (bucketG[bestBucket] / bestWeight).toInt().coerceIn(0, 255)
+                val b = (bucketB[bestBucket] / bestWeight).toInt().coerceIn(0, 255)
+                Color.rgb(r, g, b)
+            } else {
+                0xFF38BDF8.toInt()
+            }
+        } catch (_: Exception) {
+            0xFF38BDF8.toInt()
+        } finally {
+            bitmap.recycle()
+        }
+
+        return mapOf("path" to cacheFile.absolutePath, "color" to dominantColor)
     }
 }
