@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.graphics.drawable.Icon
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
@@ -26,6 +27,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
+import androidx.core.content.ContextCompat
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -251,9 +253,11 @@ class PlaybackService : Service() {
                 .build()
         }
 
-        registerReceiver(
+        ContextCompat.registerReceiver(
+            this,
             becomingNoisyReceiver,
-            IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
+            IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY),
+            ContextCompat.RECEIVER_NOT_EXPORTED
         )
 
         lyricRouter = ColorOsLyricRouter(this)
@@ -686,19 +690,22 @@ class PlaybackService : Service() {
         val isPlaying = ::player.isInitialized && player.isPlaying
 
         val prevAction = Notification.Action.Builder(
-            R.drawable.ic_noti_prev,
+            Icon.createWithResource(this, R.drawable.ic_noti_prev),
             "Previous",
             buildServicePendingIntent(ACTION_PREV, 1)
         ).build()
 
         val playPauseAction = Notification.Action.Builder(
-            if (isPlaying) R.drawable.ic_noti_pause else R.drawable.ic_noti_play,
+            Icon.createWithResource(
+                this,
+                if (isPlaying) R.drawable.ic_noti_pause else R.drawable.ic_noti_play
+            ),
             if (isPlaying) "Pause" else "Play",
             buildServicePendingIntent(ACTION_PLAY_PAUSE, 2)
         ).build()
 
         val nextAction = Notification.Action.Builder(
-            R.drawable.ic_noti_next,
+            Icon.createWithResource(this, R.drawable.ic_noti_next),
             "Next",
             buildServicePendingIntent(ACTION_NEXT, 3)
         ).build()

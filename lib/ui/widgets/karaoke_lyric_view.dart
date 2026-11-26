@@ -286,15 +286,15 @@ class _KaraokeLyricViewState extends State<KaraokeLyricView>
                       vertical: 8.0,
                     ),
                     decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.55),
+                      color: Colors.black.withValues(alpha: 0.55),
                       borderRadius: BorderRadius.circular(24.0),
                       border: Border.all(
-                        color: widget.accentColor.withOpacity(0.45),
+                        color: widget.accentColor.withValues(alpha: 0.45),
                         width: 1.0,
                       ),
                       boxShadow: <BoxShadow>[
                         BoxShadow(
-                          color: widget.accentColor.withOpacity(0.18),
+                          color: widget.accentColor.withValues(alpha: 0.18),
                           blurRadius: 16.0,
                         ),
                       ],
@@ -363,8 +363,8 @@ class _LyricLineItem extends StatelessWidget {
     );
 
     final inactiveColor = isPast
-        ? Colors.white.withOpacity(0.32)
-        : Colors.white.withOpacity(0.44);
+        ? Colors.white.withValues(alpha: 0.32)
+        : Colors.white.withValues(alpha: 0.44);
 
     return GestureDetector(
       onTap: onTap,
@@ -395,7 +395,7 @@ class _LyricLineItem extends StatelessWidget {
                         positionMs: posMs,
                         style: baseStyle,
                         accentColor: accentColor,
-                        baseColor: Colors.white.withOpacity(0.35),
+                        baseColor: Colors.white.withValues(alpha: 0.35),
                       );
                     }).toList(),
                   );
@@ -413,7 +413,7 @@ class _LyricLineItem extends StatelessWidget {
                     progress: progress,
                     style: baseStyle,
                     accentColor: accentColor,
-                    baseColor: Colors.white.withOpacity(0.38),
+                    baseColor: Colors.white.withValues(alpha: 0.38),
                   );
                 },
               ),
@@ -426,8 +426,8 @@ class _LyricLineItem extends StatelessWidget {
                   height: 1.35,
                   fontWeight: isActive ? FontWeight.w500 : FontWeight.w400,
                   color: isActive
-                      ? Colors.white.withOpacity(0.76)
-                      : Colors.white.withOpacity(0.28),
+                      ? Colors.white.withValues(alpha: 0.76)
+                      : Colors.white.withValues(alpha: 0.28),
                 ),
                 child: Text(line.translation!.trim()),
               ),
@@ -632,14 +632,14 @@ class _EmptyLyricPlaceholder extends StatelessWidget {
             height: 56.0,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: accentColor.withOpacity(0.12),
+              color: accentColor.withValues(alpha: 0.12),
               border: Border.all(
-                color: accentColor.withOpacity(0.28),
+                color: accentColor.withValues(alpha: 0.28),
               ),
             ),
             child: Icon(
               Icons.music_note_rounded,
-              color: accentColor.withOpacity(0.85),
+              color: accentColor.withValues(alpha: 0.85),
               size: 26.0,
             ),
           ),
@@ -647,7 +647,7 @@ class _EmptyLyricPlaceholder extends StatelessWidget {
           Text(
             '暂无歌词 · 纯享时刻',
             style: TextStyle(
-              color: Colors.white.withOpacity(0.55),
+              color: Colors.white.withValues(alpha: 0.55),
               fontSize: 14.5,
               fontWeight: FontWeight.w500,
               letterSpacing: 0.6,
