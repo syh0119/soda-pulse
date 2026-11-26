@@ -211,15 +211,15 @@ class _HomeShellState extends State<_HomeShell> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Row(
+        title: const Row(
           children: [
-            const Icon(
+            Icon(
               Icons.bubble_chart_rounded,
               color: Color(0xFF38BDF8),
               size: 24,
             ),
-            const SizedBox(width: 8),
-            const Text(
+            SizedBox(width: 8),
+            Text(
               'SodaPulse',
               style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: 0.4),
             ),

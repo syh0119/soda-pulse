@@ -35,7 +35,7 @@ class SodaBrowserService : MediaBrowserService() {
         result: Result<MutableList<MediaBrowser.MediaItem>>
     ) {
         if (parentId == ROOT_ID) {
-            val items = PlayerServiceBridge.service?.getQueueMediaItems() ?: mutableListOf()
+            val items = PlayerServiceBridge.service?.getQueueMediaItems()?.toMutableList() ?: mutableListOf()
             result.sendResult(items)
         } else {
             result.sendResult(mutableListOf())
