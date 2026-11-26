@@ -305,6 +305,7 @@ class ColorOsLyricRouter(context: Context? = null) {
                 }
 
                 LyricMode.AUTO -> {
+                    // Unreachable because resolveModeFromStatus resolves AUTO.
                     lastPublishResult = "AUTO_UNRESOLVED"
                 }
             }
@@ -476,8 +477,8 @@ class ColorOsLyricRouter(context: Context? = null) {
                 lines = builtLines,
             )
             val publisher: Publisher = SuperLyric.publisher()
-            publisher.publish(doc)
-            "PUBLISHED"
+            val res = publisher.publish(doc)
+            res.name
         } catch (t: Throwable) {
             Log.e(TAG, "SuperLyric publish failed: ${t.message}", t)
             "PUBLISH_ERROR:${t.javaClass.simpleName}"

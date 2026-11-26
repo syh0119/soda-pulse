@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import 'package:soda_pulse/services/native_bridge.dart';
 import 'package:soda_pulse/models/track.dart';
@@ -172,10 +174,7 @@ class _LibraryPageState extends State<LibraryPage> {
       child: Material(
         color: Colors.transparent,
         child: InkWell(
-          onTap: () {
-            widget.onPlayDemo();
-            _openPlayerPage();
-          },
+          onTap: widget.onPlayDemo,
           borderRadius: BorderRadius.circular(16),
           child: Ink(
             decoration: BoxDecoration(
@@ -290,7 +289,7 @@ class _LibraryPageState extends State<LibraryPage> {
     return ListView.separated(
       padding: EdgeInsets.fromLTRB(16, 4, 16, bottomPadding),
       itemCount: filtered.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 6),
+      separatorBuilder: (context, index) => const SizedBox(height: 6),
       itemBuilder: (context, index) {
         final item = filtered[index];
         final track = item.track;
