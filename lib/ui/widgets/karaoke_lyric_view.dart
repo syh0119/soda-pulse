@@ -351,7 +351,6 @@ class _LyricLineItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final hasWords = line.words != null && line.words!.isNotEmpty;
     final hasTranslation =
         line.translation != null && line.translation!.trim().isNotEmpty;
 
@@ -382,38 +381,26 @@ class _LyricLineItem extends StatelessWidget {
                 style: baseStyle.copyWith(color: inactiveColor),
                 child: Text(line.text),
               )
-            else if (hasWords)
-              ValueListenableBuilder<int>(
-                valueListenable: positionListenable,
-                builder: (BuildContext context, int posMs, _) {
-                  return Wrap(
-                    alignment: WrapAlignment.start,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: line.words!.map((LyricWord word) {
-                      return _KaraokeWordSweep(
-                        word: word,
-                        positionMs: posMs,
-                        style: baseStyle,
-                        accentColor: accentColor,
-                        baseColor: Colors.white.withValues(alpha: 0.35),
-                      );
-                    }).toList(),
-                  );
-                },
-              )
             else
               ValueListenableBuilder<int>(
                 valueListenable: positionListenable,
                 builder: (BuildContext context, int posMs, _) {
-                  final duration = math.max(1, lineEndMs - line.startMs);
-                  final progress = ((posMs - line.startMs) / duration)
-                      .clamp(0.0, 1.0);
-                  return _WholeLineSweep(
-                    text: line.text,
-                    progress: progress,
-                    style: baseStyle,
-                    accentColor: accentColor,
-                    baseColor: Colors.white.withValues(alpha: 0.38),
+                  final displayWords = resolveDisplayWords(
+                    line,
+                    fallbackEndMs: lineEndMs,
+                  );
+                  return Wrap(
+                    alignment: WrapAlignment.start,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: displayWords.map((LyricWord word) {
+                      return _KaraokeWordSweep(
+                        word: word,
+                        positionMs: posMs,
+                        style: baseStyle,
+                        accentColor: Colors.white,
+                        baseColor: Colors.white.withValues(alpha: 0.36),
+                      );
+                    }).toList(growable: false),
                   );
                 },
               ),
@@ -518,6 +505,7 @@ class _KaraokeWordSweep extends StatelessWidget {
   }
 }
 
+// ignore: unused_element
 class _WholeLineSweep extends StatelessWidget {
   const _WholeLineSweep({
     required this.text,
@@ -654,6 +642,321 @@ class _EmptyLyricPlaceholder extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _LyricToken {
+  String text;
+  final bool isCjk;
+  int nonSpaceChars;
+
+  _LyricToken({
+    required this.text,
+    required this.isCjk,
+    required this.nonSpaceChars,
+  });
+
+  double get weight {
+    if (isCjk) return 1.0;
+    return 0.52 * nonSpaceChars + 0.12;
+  }
+}
+
+bool _isCjkRune(int rune) {
+  return (rune >= 0x4E00 && rune <= 0x9FFF) || // CJK Unified Ideographs
+      (rune >= 0x3400 && rune <= 0x4DBF) || // CJK Extension A
+      (rune >= 0x3040 && rune <= 0x309F) || // Hiragana
+      (rune >= 0x30A0 && rune <= 0x30FF) || // Katakana
+      (rune >= 0xAC00 && rune <= 0xD7AF) || // Hangul Syllables
+      (rune >= 0xF900 && rune <= 0xFAFF); // CJK Compatibility Ideographs
+}
+
+bool _isWhitespaceRune(int rune) {
+  return rune == 0x20 ||
+      rune == 0x09 ||
+      rune == 0x0A ||
+      rune == 0x0D ||
+      rune == 0x3000;
+}
+
+bool _isPunctuationRune(int rune) {
+  const String punctuation = '.,!?;:"()[]{}<>-—…，。！？；：、（）《》「」『』【】“”‘’~·';
+  if (punctuation.codeUnits.contains(rune)) return true;
+  // ASCII punctuation ranges excluding apostrophe (handled inline for contractions)
+  return (rune >= 0x21 && rune <= 0x26) ||
+      (rune >= 0x28 && rune <= 0x2F) ||
+      (rune >= 0x3A && rune <= 0x40) ||
+      (rune >= 0x5B && rune <= 0x60) ||
+      (rune >= 0x7B && rune <= 0x7E);
+}
+
+List<LyricWord> resolveDisplayWords(LyricLine line, {int? fallbackEndMs}) {
+  final existing = line.words;
+  if (existing != null && existing.isNotEmpty) {
+    return existing;
+  }
+  final String text = line.text;
+  if (text.isEmpty) {
+    return const <LyricWord>[];
+  }
+
+  final int totalDur = math.max(
+    200,
+    (((fallbackEndMs ?? line.endMs) - line.startMs) * 0.94).round(),
+  );
+
+  final List<_LyricToken> tokens = <_LyricToken>[];
+  final List<int> runes = text.runes.toList(growable: false);
+  final StringBuffer pendingLeadingSpaces = StringBuffer();
+  int i = 0;
+
+  while (i < runes.length) {
+    final int rune = runes[i];
+
+    if (_isWhitespaceRune(rune)) {
+      final String ch = String.fromCharCode(rune);
+      if (tokens.isNotEmpty) {
+        tokens.last.text += ch;
+      } else {
+        pendingLeadingSpaces.write(ch);
+      }
+      i++;
+      continue;
+    }
+
+    if (_isCjkRune(rune)) {
+      final String prefix = pendingLeadingSpaces.toString();
+      pendingLeadingSpaces.clear();
+      tokens.add(
+        _LyricToken(
+          text: '$prefix${String.fromCharCode(rune)}',
+          isCjk: true,
+          nonSpaceChars: 1,
+        ),
+      );
+      i++;
+      continue;
+    }
+
+    if (_isPunctuationRune(rune)) {
+      final String ch = String.fromCharCode(rune);
+      if (tokens.isNotEmpty) {
+        tokens.last.text += ch;
+      } else {
+        final String prefix = pendingLeadingSpaces.toString();
+        pendingLeadingSpaces.clear();
+        tokens.add(
+          _LyricToken(
+            text: '$prefix$ch',
+            isCjk: false,
+            nonSpaceChars: 1,
+          ),
+        );
+      }
+      i++;
+      continue;
+    }
+
+    // Latin / digit / contraction word
+    final StringBuffer wordBuf = StringBuffer();
+    if (pendingLeadingSpaces.isNotEmpty) {
+      wordBuf.write(pendingLeadingSpaces.toString());
+      pendingLeadingSpaces.clear();
+    }
+    int nonSpaceCount = 0;
+
+    while (i < runes.length) {
+      final int r = runes[i];
+      if (_isWhitespaceRune(r) || _isCjkRune(r) || _isPunctuationRune(r)) {
+        break;
+      }
+      wordBuf.writeCharCode(r);
+      nonSpaceCount++;
+      i++;
+    }
+
+    // Attach trailing spaces directly to the Latin/digit token
+    while (i < runes.length && _isWhitespaceRune(runes[i])) {
+      wordBuf.writeCharCode(runes[i]);
+      i++;
+    }
+
+    tokens.add(
+      _LyricToken(
+        text: wordBuf.toString(),
+        isCjk: false,
+        nonSpaceChars: nonSpaceCount,
+      ),
+    );
+  }
+
+  if (tokens.isEmpty) {
+    return <LyricWord>[
+      LyricWord(
+        text: text,
+        startMs: line.startMs,
+        endMs: line.startMs + totalDur,
+      ),
+    ];
+  }
+
+  final double totalWeight = tokens.fold<double>(
+    0.0,
+    (double sum, _LyricToken t) => sum + t.weight,
+  );
+
+  final List<LyricWord> result = <LyricWord>[];
+  int currentMs = line.startMs;
+  double accumulatedWeight = 0.0;
+
+  for (int idx = 0; idx < tokens.length; idx++) {
+    final _LyricToken token = tokens[idx];
+    final int startMs = currentMs;
+    int endMs;
+
+    if (idx == tokens.length - 1) {
+      final int targetEnd = line.startMs + totalDur;
+      endMs = targetEnd > startMs ? targetEnd : startMs + 1;
+    } else {
+      accumulatedWeight += token.weight;
+      final double ratio = totalWeight > 0 ? accumulatedWeight / totalWeight : 1.0;
+      final int targetEnd = line.startMs + (ratio * totalDur).round();
+      endMs = targetEnd > startMs ? targetEnd : startMs + 1;
+    }
+
+    result.add(
+      LyricWord(
+        text: token.text,
+        startMs: startMs,
+        endMs: endMs,
+      ),
+    );
+    currentMs = endMs;
+  }
+
+  return result;
+}
+
+class KaraokeSingleLineSweep extends StatelessWidget {
+  final LyricLine line;
+  final int positionMs;
+  final TextStyle style;
+  final Color activeColor;
+  final Color inactiveColor;
+  final Color? glowColor;
+
+  const KaraokeSingleLineSweep({
+    super.key,
+    required this.line,
+    required this.positionMs,
+    required this.style,
+    this.activeColor = Colors.white,
+    this.inactiveColor = const Color(0x6BFFFFFF),
+    this.glowColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final List<LyricWord> words = resolveDisplayWords(line);
+    if (words.isEmpty) {
+      return Text(
+        line.text,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: style.copyWith(color: inactiveColor),
+      );
+    }
+
+    final List<Shadow>? activeShadows = glowColor != null
+        ? <Shadow>[
+            Shadow(
+              color: glowColor!,
+              blurRadius: 10,
+            ),
+          ]
+        : style.shadows;
+
+    final TextStyle activeStyle = style.copyWith(
+      color: activeColor,
+      shadows: activeShadows,
+    );
+    final TextStyle inactiveStyle = style.copyWith(
+      color: inactiveColor,
+    );
+    final TextStyle maskBaseStyle = style.copyWith(
+      color: Colors.white,
+      shadows: activeShadows,
+    );
+
+    return ClipRect(
+      child: FittedBox(
+        fit: BoxFit.scaleDown,
+        alignment: Alignment.centerLeft,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.baseline,
+          textBaseline: TextBaseline.alphabetic,
+          children: words.map((LyricWord word) {
+            final int duration = word.endMs - word.startMs;
+            final double progress = duration <= 0
+                ? (positionMs >= word.endMs ? 1.0 : 0.0)
+                : ((positionMs - word.startMs) / duration).clamp(0.0, 1.0);
+
+            if (progress <= 0.0) {
+              return Text(
+                word.text,
+                maxLines: 1,
+                softWrap: false,
+                overflow: TextOverflow.visible,
+                style: inactiveStyle,
+              );
+            }
+
+            if (progress >= 1.0) {
+              return Text(
+                word.text,
+                maxLines: 1,
+                softWrap: false,
+                overflow: TextOverflow.visible,
+                style: activeStyle,
+              );
+            }
+
+            final double featherStart = (progress - 0.02).clamp(0.0, 1.0);
+            final double featherEnd = (progress + 0.02).clamp(0.0, 1.0);
+
+            return ShaderMask(
+              blendMode: BlendMode.srcIn,
+              shaderCallback: (Rect bounds) {
+                return LinearGradient(
+                  begin: Alignment.centerLeft,
+                  end: Alignment.centerRight,
+                  colors: <Color>[
+                    activeColor,
+                    activeColor,
+                    inactiveColor,
+                    inactiveColor,
+                  ],
+                  stops: <double>[
+                    0.0,
+                    featherStart,
+                    featherEnd,
+                    1.0,
+                  ],
+                ).createShader(bounds);
+              },
+              child: Text(
+                word.text,
+                maxLines: 1,
+                softWrap: false,
+                overflow: TextOverflow.visible,
+                style: maskBaseStyle,
+              ),
+            );
+          }).toList(growable: false),
+        ),
       ),
     );
   }

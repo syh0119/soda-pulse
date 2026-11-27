@@ -2,6 +2,8 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:soda_pulse/core/app_store.dart';
+import 'package:soda_pulse/ui/pages/drive_page.dart';
+import 'package:soda_pulse/core/daily_copy.dart';
 import 'package:soda_pulse/models/track.dart';
 
 const Color _sheetBg = Color(0xFF121826);
@@ -1162,4 +1164,875 @@ Future<void> showTrackOptionsSheet(
       );
     },
   );
+}
+
+Future<void> showModeSelectSheet(BuildContext context, AppStore store) {
+  return showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (sheetContext) {
+      return AnimatedBuilder(
+        animation: store,
+        builder: (ctx, _) {
+          final height = MediaQuery.of(ctx).size.height * 0.94;
+          final isRecommend =
+              !store.pureMode && store.playerStyle == PlayerStyle.recommend;
+          final isFree =
+              !store.pureMode && store.playerStyle == PlayerStyle.free;
+          final isPure = store.pureMode;
+
+          return Container(
+            height: height,
+            decoration: const BoxDecoration(
+              borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  Color(0xFF133023),
+                  Color(0xFF0B0E11),
+                ],
+                stops: [0.0, 0.38],
+              ),
+            ),
+            child: SafeArea(
+              top: false,
+              child: Column(
+                children: [
+                  const SizedBox(height: 10),
+                  Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      Container(
+                        width: 40,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.24),
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: Padding(
+                          padding: const EdgeInsets.only(right: 10),
+                          child: IconButton(
+                            onPressed: () => Navigator.of(sheetContext).pop(),
+                            icon: Icon(
+                              Icons.close_rounded,
+                              color: Colors.white.withOpacity(0.78),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.baseline,
+                            textBaseline: TextBaseline.alphabetic,
+                            children: [
+                              const Text(
+                                '模式选择',
+                                style: TextStyle(
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.w800,
+                                  color: Colors.white,
+                                ),
+                              ),
+                              const Spacer(),
+                              Text(
+                                '全页面 · 点选切换',
+                                style: TextStyle(
+                                  fontSize: 12.5,
+                                  color: Colors.white.withOpacity(0.50),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            '切换后立即生效，并记住你的选择',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.white.withOpacity(0.58),
+                            ),
+                          ),
+                          const SizedBox(height: 20),
+                          _ModeSelectCard(
+                            icon: Icons.auto_awesome_rounded,
+                            title: '推荐模式',
+                            subtitle: '封面在上 · 信息在下，左右滑动切歌',
+                            selected: isRecommend,
+                            onTap: () {
+                              store.setPureMode(false);
+                              store.setPlayerStyle(PlayerStyle.recommend);
+                              Navigator.of(sheetContext).pop();
+                            },
+                          ),
+                          const SizedBox(height: 12),
+                          _ModeSelectCard(
+                            icon: Icons.blur_on_rounded,
+                            title: 'Free 模式',
+                            subtitle: '封面取色铺满全屏 · 底部发现 / 我的，中间一键播放',
+                            selected: isFree,
+                            onTap: () {
+                              store.setPureMode(false);
+                              store.setPlayerStyle(PlayerStyle.free);
+                              Navigator.of(sheetContext).pop();
+                            },
+                          ),
+                          const SizedBox(height: 12),
+                          _ModeSelectCard(
+                            icon: Icons.nightlight_round,
+                            title: '纯净模式',
+                            subtitle: '全屏无干扰 · 只留封面与三键控制',
+                            selected: isPure,
+                            onTap: () {
+                              store.setPureMode(true);
+                              Navigator.of(sheetContext).pop();
+                            },
+                          ),
+                          const SizedBox(height: 12),
+                          _ModeSelectCard(
+                            icon: Icons.directions_car_rounded,
+                            title: '驾驶模式',
+                            subtitle: '超大字号与大按钮，行车时一眼可读',
+                            selected: false,
+                            onTap: () {
+                              Navigator.of(sheetContext).pop();
+                              Navigator.of(context).push(
+                                MaterialPageRoute<void>(
+                                  builder: (_) => DrivePage(store: store),
+                                ),
+                              );
+                            },
+                          ),
+                          const SizedBox(height: 16),
+                          Container(
+                            padding: const EdgeInsets.all(18),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF14191C),
+                              borderRadius: BorderRadius.circular(22),
+                              border: Border.all(
+                                color: Colors.white.withOpacity(0.08),
+                              ),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Container(
+                                      width: 38,
+                                      height: 38,
+                                      decoration: BoxDecoration(
+                                        color: Colors.white.withOpacity(0.06),
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      child: const Icon(
+                                        Icons.grid_view_rounded,
+                                        color: Color(0xFF2FE08B),
+                                        size: 20,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          const Text(
+                                            '车机版式',
+                                            style: TextStyle(
+                                              fontSize: 15.5,
+                                              fontWeight: FontWeight.w700,
+                                              color: Colors.white,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 2),
+                                          Text(
+                                            '车机上建议开启，横竖屏自动适配大按钮 / 大字号',
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              color: Colors.white
+                                                  .withOpacity(0.55),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 14),
+                                Row(
+                                  children: List.generate(
+                                    CarLayoutMode.values.length,
+                                    (index) {
+                                      final mode = CarLayoutMode.values[index];
+                                      final selected =
+                                          store.carLayoutMode == mode;
+                                      const labels = ['自动', '开启', '关闭'];
+                                      final label = index < labels.length
+                                          ? labels[index]
+                                          : mode.name;
+
+                                      return Expanded(
+                                        child: Padding(
+                                          padding: EdgeInsets.only(
+                                            right: index ==
+                                                    CarLayoutMode
+                                                            .values.length -
+                                                        1
+                                                ? 0
+                                                : 8,
+                                          ),
+                                          child: GestureDetector(
+                                            onTap: () =>
+                                                store.setCarLayoutMode(mode),
+                                            child: AnimatedContainer(
+                                              duration: const Duration(
+                                                milliseconds: 180,
+                                              ),
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                vertical: 10,
+                                              ),
+                                              alignment: Alignment.center,
+                                              decoration: BoxDecoration(
+                                                color: selected
+                                                    ? const Color(0xFF123626)
+                                                    : Colors.white
+                                                        .withOpacity(0.05),
+                                                borderRadius:
+                                                    BorderRadius.circular(999),
+                                                border: Border.all(
+                                                  color: selected
+                                                      ? const Color(0xFF2FE08B)
+                                                      : Colors.white
+                                                          .withOpacity(0.08),
+                                                  width: selected ? 1.2 : 1.0,
+                                                ),
+                                              ),
+                                              child: Text(
+                                                label,
+                                                style: TextStyle(
+                                                  fontSize: 13.5,
+                                                  fontWeight: selected
+                                                      ? FontWeight.w700
+                                                      : FontWeight.w500,
+                                                  color: selected
+                                                      ? const Color(0xFF2FE08B)
+                                                      : Colors.white
+                                                          .withOpacity(0.75),
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      );
+    },
+  );
+}
+
+class _ModeSelectCard extends StatelessWidget {
+  const _ModeSelectCard({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          color: selected ? const Color(0xFF123626) : const Color(0xFF14191C),
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(
+            color: selected
+                ? const Color(0xFF2FE08B)
+                : Colors.white.withOpacity(0.08),
+            width: selected ? 1.4 : 1.0,
+          ),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: selected
+                    ? const Color(0xFF2FE08B).withOpacity(0.16)
+                    : Colors.white.withOpacity(0.06),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Icon(
+                icon,
+                color: selected
+                    ? const Color(0xFF2FE08B)
+                    : Colors.white.withOpacity(0.82),
+                size: 22,
+              ),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color:
+                          selected ? const Color(0xFF2FE08B) : Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      height: 1.35,
+                      color: Colors.white.withOpacity(0.58),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            if (selected)
+              const Icon(
+                Icons.check_circle_rounded,
+                color: Color(0xFF2FE08B),
+                size: 24,
+              )
+            else
+              Container(
+                width: 22,
+                height: 22,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: Colors.white.withOpacity(0.26),
+                    width: 1.5,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+Future<void> showMoreRoamSheet(
+  BuildContext context,
+  AppStore store, {
+  VoidCallback? onOpenLyrics,
+  VoidCallback? onOpenIsland,
+}) {
+  const roamStyles = <({String label, Color tint})>[
+    (label: '猜你喜欢', tint: Color(0xFF1F4E3D)),
+    (label: 'Chill放松', tint: Color(0xFF1C3F52)),
+    (label: '快乐时光', tint: Color(0xFF4D3E1C)),
+    (label: '通勤必听', tint: Color(0xFF283A52)),
+    (label: '驾车', tint: Color(0xFF3E2D52)),
+    (label: '洗澡', tint: Color(0xFF1B4B4E)),
+    (label: '夜晚', tint: Color(0xFF242B47)),
+    (label: 'DJ模式', tint: Color(0xFF4F283A)),
+    (label: '治愈', tint: Color(0xFF274936)),
+  ];
+
+  return showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (sheetContext) {
+      return AnimatedBuilder(
+        animation: store,
+        builder: (ctx, _) {
+          final height = MediaQuery.of(ctx).size.height * 0.88;
+          final track = store.currentTrack;
+          final greeting = DailyCopy.now();
+          final tip = DailyCopy.dailyTip();
+
+          return Container(
+            height: height,
+            decoration: const BoxDecoration(
+              color: Color(0xFF141619),
+              borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+            ),
+            child: SafeArea(
+              top: false,
+              child: Column(
+                children: [
+                  const SizedBox(height: 10),
+                  Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.22),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 14, 20, 14),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                track?.title ?? 'SodaPulse',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 16.5,
+                                  fontWeight: FontWeight.w700,
+                                  color: Colors.white,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                track?.artist ?? '本地曲库',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 12.5,
+                                  color: Colors.white.withOpacity(0.55),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        GestureDetector(
+                          onTap: () {
+                            Navigator.of(sheetContext).pop();
+                            showSoundEffectSheet(context, store);
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF123626),
+                              borderRadius: BorderRadius.circular(999),
+                              border: Border.all(
+                                color: const Color(0xFF2FE08B),
+                                width: 1.1,
+                              ),
+                            ),
+                            child: const Text(
+                              '高品质',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                                color: Color(0xFF2FE08B),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Divider(
+                    height: 1,
+                    color: Colors.white.withOpacity(0.06),
+                  ),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(20),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(22),
+                              gradient: const LinearGradient(
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                                colors: [
+                                  Color(0xFF14422D),
+                                  Color(0xFF0F3021),
+                                ],
+                              ),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  greeting.title,
+                                  style: const TextStyle(
+                                    fontSize: 24,
+                                    fontWeight: FontWeight.w800,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  greeting.subtitle,
+                                  style: TextStyle(
+                                    fontSize: 13.5,
+                                    color: Colors.white.withOpacity(0.76),
+                                  ),
+                                ),
+                                const SizedBox(height: 14),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 8,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withOpacity(0.10),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Text(
+                                    tip,
+                                    style: TextStyle(
+                                      fontSize: 12.5,
+                                      color: Colors.white.withOpacity(0.90),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 22),
+                          const Row(
+                            children: [
+                              Icon(
+                                Icons.tune_rounded,
+                                color: Color(0xFF2FE08B),
+                                size: 18,
+                              ),
+                              SizedBox(width: 8),
+                              Text(
+                                '选个模式听歌吧',
+                                style: TextStyle(
+                                  fontSize: 15.5,
+                                  fontWeight: FontWeight.w700,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: _RecommendModeCard(
+                                  label: '新鲜模式',
+                                  icon: Icons.explore_rounded,
+                                  selected: store.recommendMode ==
+                                      RecommendMode.fresh,
+                                  onTap: () => store
+                                      .setRecommendMode(RecommendMode.fresh),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: _RecommendModeCard(
+                                  label: '熟悉模式',
+                                  icon: Icons.favorite_rounded,
+                                  selected: store.recommendMode ==
+                                      RecommendMode.familiar,
+                                  onTap: () => store
+                                      .setRecommendMode(RecommendMode.familiar),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: _RecommendModeCard(
+                                  label: '默认模式',
+                                  icon: Icons.graphic_eq_rounded,
+                                  selected: store.recommendMode ==
+                                      RecommendMode.balanced,
+                                  onTap: () => store
+                                      .setRecommendMode(RecommendMode.balanced),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 22),
+                          const Row(
+                            children: [
+                              Icon(
+                                Icons.auto_awesome_rounded,
+                                color: Color(0xFF2FE08B),
+                                size: 18,
+                              ),
+                              SizedBox(width: 8),
+                              Text(
+                                '按风格漫游',
+                                style: TextStyle(
+                                  fontSize: 15.5,
+                                  fontWeight: FontWeight.w700,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          GridView.count(
+                            crossAxisCount: 3,
+                            childAspectRatio: 2.35,
+                            crossAxisSpacing: 10,
+                            mainAxisSpacing: 10,
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            children: roamStyles.map((item) {
+                              return GestureDetector(
+                                onTap: () {
+                                  final messenger =
+                                      ScaffoldMessenger.of(context);
+                                  store.refreshRecommendQueue();
+                                  Navigator.of(sheetContext).pop();
+                                  messenger.showSnackBar(
+                                    SnackBar(
+                                      content: Text('已开启「${item.label}」漫游'),
+                                      behavior: SnackBarBehavior.floating,
+                                    ),
+                                  );
+                                },
+                                child: Container(
+                                  alignment: Alignment.center,
+                                  decoration: BoxDecoration(
+                                    color: item.tint.withOpacity(0.55),
+                                    borderRadius: BorderRadius.circular(14),
+                                    border: Border.all(
+                                      color: Colors.white.withOpacity(0.08),
+                                    ),
+                                  ),
+                                  child: Text(
+                                    item.label,
+                                    style: const TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                          const SizedBox(height: 22),
+                          Text(
+                            '播放',
+                            style: TextStyle(
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.white.withOpacity(0.55),
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          Container(
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF181C20),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: Column(
+                              children: [
+                                _MorePlayTile(
+                                  icon: Icons.lyrics_rounded,
+                                  title: '查看歌词',
+                                  onTap: () {
+                                    Navigator.of(sheetContext).pop();
+                                    onOpenLyrics?.call();
+                                  },
+                                ),
+                                _MorePlayDivider(),
+                                _MorePlayTile(
+                                  icon: Icons.speaker_group_rounded,
+                                  title: '音频输出',
+                                  onTap: () {
+                                    Navigator.of(sheetContext).pop();
+                                    showSoundEffectSheet(context, store);
+                                  },
+                                ),
+                                _MorePlayDivider(),
+                                _MorePlayTile(
+                                  icon: Icons.timer_rounded,
+                                  title: '定时关闭与倍速',
+                                  onTap: () {
+                                    Navigator.of(sheetContext).pop();
+                                    showSleepAndSpeedSheet(context, store);
+                                  },
+                                ),
+                                _MorePlayDivider(),
+                                _MorePlayTile(
+                                  icon: Icons.subtitles_rounded,
+                                  title: '灵动岛 & 逐字歌词',
+                                  onTap: () {
+                                    Navigator.of(sheetContext).pop();
+                                    onOpenIsland?.call();
+                                  },
+                                ),
+                                _MorePlayDivider(),
+                                _MorePlayTile(
+                                  icon: Icons.palette_rounded,
+                                  title: '皮肤与底栏',
+                                  onTap: () {
+                                    Navigator.of(sheetContext).pop();
+                                    showSkinAndLayoutSheet(context, store);
+                                  },
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      );
+    },
+  );
+}
+
+class _RecommendModeCard extends StatelessWidget {
+  const _RecommendModeCard({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
+        decoration: BoxDecoration(
+          color: selected ? const Color(0xFF123626) : const Color(0xFF181C20),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(
+            color: selected
+                ? const Color(0xFF2FE08B)
+                : Colors.white.withOpacity(0.08),
+            width: selected ? 1.3 : 1.0,
+          ),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              size: 22,
+              color: selected
+                  ? const Color(0xFF2FE08B)
+                  : Colors.white.withOpacity(0.80),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                color: selected ? const Color(0xFF2FE08B) : Colors.white,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MorePlayTile extends StatelessWidget {
+  const _MorePlayTile({
+    required this.icon,
+    required this.title,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      onTap: onTap,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 2),
+      leading: Icon(
+        icon,
+        size: 21,
+        color: Colors.white.withOpacity(0.85),
+      ),
+      title: Text(
+        title,
+        style: const TextStyle(
+          fontSize: 15,
+          fontWeight: FontWeight.w500,
+          color: Colors.white,
+        ),
+      ),
+      trailing: Icon(
+        Icons.chevron_right_rounded,
+        color: Colors.white.withOpacity(0.38),
+      ),
+    );
+  }
+}
+
+class _MorePlayDivider extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Divider(
+      height: 1,
+      indent: 54,
+      endIndent: 18,
+      color: Colors.white.withOpacity(0.06),
+    );
+  }
 }

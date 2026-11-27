@@ -46,6 +46,18 @@ class DailyCopy {
 
   static DailyGreeting now() => forHour(DateTime.now().hour);
 
+  static const List<String> _dailyTips = <String>[
+    '今天宜数星星，宜喝咖啡，宜看海',
+    '把音量留给喜欢的副歌，把烦躁留在门外',
+    '今天宜晚风散步，宜单曲循环老歌',
+    '好天气和好歌单，总有一样在路上',
+  ];
+
+  static String dailyTip() {
+    final dayIndex = DateTime.now().day % _dailyTips.length;
+    return _dailyTips[dayIndex];
+  }
+
   static const List<String> listeningQuotes = <String>[
     '那些安静听歌的时刻，都是音乐在替你接住情绪。',
     '耳机一戴，世界自动静音，只剩心跳和副歌同频。',

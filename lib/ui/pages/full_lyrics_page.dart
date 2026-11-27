@@ -193,7 +193,7 @@ class _FullLyricsPageState extends State<FullLyricsPage> {
                           : null,
                       child: KaraokeLyricView(
                         lyrics: store.currentLyrics,
-                        positionProvider: () => store.positionMs,
+                        positionProvider: () => store.livePositionMs,
                         offsetMs: offsetMs,
                         accentColor: accent,
                         onSeekToMs: store.seekTo,

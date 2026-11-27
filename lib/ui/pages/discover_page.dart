@@ -1,224 +1,285 @@
+import 'package:soda_pulse/models/track.dart';
+import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:soda_pulse/core/app_store.dart';
-import 'package:soda_pulse/models/track.dart';
-import 'package:soda_pulse/ui/sheets/player_sheets.dart';
+import 'package:soda_pulse/ui/theme/soda_theme.dart';
 
 class DiscoverPage extends StatefulWidget {
   const DiscoverPage({
     super.key,
     required this.store,
     required this.onOpenPlayer,
+    this.openSearchOnStart = false,
   });
 
   final AppStore store;
   final VoidCallback onOpenPlayer;
+  final bool openSearchOnStart;
 
   @override
   State<DiscoverPage> createState() => _DiscoverPageState();
 }
 
 class _DiscoverPageState extends State<DiscoverPage> {
-  final TextEditingController _searchController = TextEditingController();
+  static const Color _bgTop = Color(0xFF10281E);
+  static const Color _bgBottom = Color(0xFF0A0D0E);
+  static const Color _emerald = Color(0xFF2FE08B);
+  static const Color _emeraldBox = Color(0xFF123626);
+  static const Color _cardSurface = Color(0xFF151A1C);
+
+  late final TextEditingController _searchController;
+  late final FocusNode _searchFocusNode;
+
+  late bool _searchOpen;
   String _query = '';
-  bool _searchingOnline = false;
+  bool _isSearchingOnline = false;
   List<Track> _onlineResults = const <Track>[];
+
+  @override
+  void initState() {
+    super.initState();
+    _searchOpen = widget.openSearchOnStart;
+    _searchController = TextEditingController();
+    _searchFocusNode = FocusNode();
+    if (widget.openSearchOnStart) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _searchFocusNode.requestFocus();
+        }
+      });
+    }
+  }
 
   @override
   void dispose() {
     _searchController.dispose();
+    _searchFocusNode.dispose();
     super.dispose();
   }
 
-  Future<void> _triggerOnlineSearch() async {
-    final q = _query.trim();
-    if (q.isEmpty || _searchingOnline) return;
-    widget.store.addSearchQuery(q);
-    setState(() => _searchingOnline = true);
+  void _toggleSearch() {
+    setState(() {
+      if (_searchOpen || _query.isNotEmpty) {
+        _searchOpen = false;
+        _query = '';
+        _searchController.clear();
+        _searchFocusNode.unfocus();
+      } else {
+        _searchOpen = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            _searchFocusNode.requestFocus();
+          }
+        });
+      }
+    });
+  }
+
+  void _onQueryChanged(String value) {
+    setState(() {
+      _query = value.trim();
+    });
+  }
+
+  Future<void> _submitSearch(String raw) async {
+    final q = raw.trim();
+    if (q.isEmpty) return;
+    setState(() {
+      _query = q;
+      _isSearchingOnline = true;
+    });
+    _searchFocusNode.unfocus();
     try {
       final res = await widget.store.searchOnlineTracks(q);
-      if (mounted) {
-        setState(() => _onlineResults = res);
-      }
+      if (mounted) setState(() => _onlineResults = res);
     } finally {
       if (mounted) {
-        setState(() => _searchingOnline = false);
+        setState(() {
+          _isSearchingOnline = false;
+        });
       }
     }
   }
 
-  String _recommendModeLabel(dynamic mode) {
-    final raw = mode.toString();
-    if (raw.contains('familiar') || raw.contains('熟悉')) {
-      return '熟悉模式';
-    }
-    if (raw.contains('fresh') || raw.contains('新鲜')) {
-      return '新鲜模式';
-    }
-    return '默认模式';
+  void _applyRecentSearch(String term) {
+    _searchController.text = term;
+    _searchController.selection = TextSelection.fromPosition(
+      TextPosition(offset: term.length),
+    );
+    _submitSearch(term);
   }
 
-  Map<String, List<Track>> _groupAlbums(List<Track> tracks) {
-    final map = <String, List<Track>>{};
-    for (final track in tracks) {
-      final albumName = track.album.trim().isEmpty ? '未知专辑' : track.album;
-      map.putIfAbsent(albumName, () => <Track>[]).add(track);
-    }
-    return map;
+  void _handleBack() {
+    Navigator.maybePop(context).then((popped) {
+      if (!popped && mounted) {
+        widget.onOpenPlayer();
+      }
+    });
   }
 
-  void _playTracks(List<Track> tracks, {int initialIndex = 0}) {
-    if (tracks.isEmpty) return;
-    widget.store.playQueue(tracks, initialIndex: initialIndex);
+  void _playTrackList(List<dynamic> tracks, {int index = 0}) {
+    if (tracks.isEmpty) {
+      widget.store.playDemo();
+      widget.onOpenPlayer();
+      return;
+    }
+    widget.store.playQueue(tracks.cast(), initialIndex: index);
     widget.onOpenPlayer();
   }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
     return AnimatedBuilder(
       animation: widget.store,
-      builder: (context, child) {
-        final trimmed = _query.trim().toLowerCase();
-        final library = widget.store.library;
-        final recentSearches = widget.store.recentSearches;
+      builder: (context, _) {
+        final showSearchPanel =
+            _searchOpen || widget.openSearchOnStart || _query.isNotEmpty;
 
-        return CustomScrollView(
-          physics: const BouncingScrollPhysics(),
-          slivers: [
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: EdgeInsets.fromLTRB(
-                  16,
-                  MediaQuery.paddingOf(context).top + 12,
-                  16,
-                  8,
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _buildFrostedSearchBar(colorScheme),
-                    if (recentSearches.isNotEmpty) ...[
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Text(
-                            '最近搜索',
-                            style: theme.textTheme.labelLarge?.copyWith(
-                              color: colorScheme.onSurface.withValues(alpha: 0.7),
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          const Spacer(),
-                          TextButton(
-                            onPressed: widget.store.clearSearchHistory,
-                            style: TextButton.styleFrom(
-                              visualDensity: VisualDensity.compact,
-                              padding: const EdgeInsets.symmetric(horizontal: 8),
-                            ),
-                            child: Text(
-                              '清空',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: colorScheme.onSurface.withValues(alpha: 0.55),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 6),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 6,
-                        children: recentSearches.map((term) {
-                          return ActionChip(
-                            label: Text(term),
-                            labelStyle: TextStyle(
-                              fontSize: 12,
-                              color: colorScheme.onSurface.withValues(alpha: 0.85),
-                            ),
-                            backgroundColor:
-                                colorScheme.surfaceContainerHighest.withValues(alpha: 0.45),
-                            side: BorderSide(
-                              color: colorScheme.outline.withValues(alpha: 0.15),
-                            ),
-                            onPressed: () {
-                              _searchController.text = term;
-                              _searchController.selection = TextSelection.fromPosition(
-                                TextPosition(offset: term.length),
-                              );
-                              setState(() {
-                                _query = term;
-                              });
-                            },
-                          );
-                        }).toList(),
-                      ),
-                    ],
-                  ],
-                ),
+        return Scaffold(
+          backgroundColor: _bgBottom,
+          body: Container(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [_bgTop, _bgBottom],
+                stops: [0.0, 0.34],
               ),
             ),
-            if (trimmed.isNotEmpty)
-              ..._buildSearchResults(context, trimmed)
-            else
-              ..._buildDiscoverContent(context, library),
-            const SliverToBoxAdapter(child: SizedBox(height: 120)),
-          ],
+            child: Column(
+              children: [
+                _buildTopHeader(showSearchPanel),
+                if (showSearchPanel) _buildFrostedSearchBar(),
+                Expanded(
+                  child: _query.isNotEmpty
+                      ? _buildSearchResults()
+                      : _buildDiscoverFeed(showSearchPanel),
+                ),
+              ],
+            ),
+          ),
         );
       },
     );
   }
 
-  Widget _buildFrostedSearchBar(ColorScheme colorScheme) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(18),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-        child: Container(
-          decoration: BoxDecoration(
-            color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.45),
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(
-              color: colorScheme.onSurface.withValues(alpha: 0.1),
+  Widget _buildTopHeader(bool showSearchPanel) {
+    return SafeArea(
+      bottom: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+        child: Row(
+          children: [
+            _CircleGlassButton(
+              icon: Icons.chevron_left_rounded,
+              onTap: _handleBack,
             ),
-          ),
-          child: TextField(
-            controller: _searchController,
-            onChanged: (value) {
-              setState(() {
-                _query = value;
-              });
-            },
-            decoration: InputDecoration(
-              hintText: '歌名 / 歌手 / 歌单',
-              hintStyle: TextStyle(
-                color: colorScheme.onSurface.withValues(alpha: 0.45),
-                fontSize: 14,
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    '发现',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 22,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: -0.3,
+                      height: 1.15,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '编辑部 · 每天换一批',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.48),
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
               ),
-              prefixIcon: Icon(
-                Icons.search_rounded,
-                color: colorScheme.onSurface.withValues(alpha: 0.65),
+            ),
+            _CircleGlassButton(
+              icon: showSearchPanel
+                  ? Icons.close_rounded
+                  : Icons.search_rounded,
+              onTap: _toggleSearch,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFrostedSearchBar() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(18),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+          child: Container(
+            height: 48,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(
+                color: Colors.white.withValues(alpha: 0.12),
               ),
-              suffixIcon: _query.isNotEmpty
-                  ? IconButton(
-                      icon: const Icon(Icons.close_rounded, size: 18),
-                      onPressed: () {
-                        _searchController.clear();
-                        setState(() {
-                          _query = '';
-                        });
-                      },
-                    )
-                  : null,
-              border: InputBorder.none,
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 14,
-                vertical: 14,
-              ),
+            ),
+            child: Row(
+              children: [
+                const SizedBox(width: 14),
+                Icon(
+                  Icons.search_rounded,
+                  size: 20,
+                  color: Colors.white.withValues(alpha: 0.55),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: TextField(
+                    controller: _searchController,
+                    focusNode: _searchFocusNode,
+                    onChanged: _onQueryChanged,
+                    onSubmitted: _submitSearch,
+                    textInputAction: TextInputAction.search,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14.5,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    cursorColor: _emerald,
+                    decoration: InputDecoration(
+                      isDense: true,
+                      border: InputBorder.none,
+                      hintText: '搜索本地曲库、简繁歌词或在线曲库...',
+                      hintStyle: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.42),
+                        fontSize: 14,
+                      ),
+                    ),
+                  ),
+                ),
+                if (_query.isNotEmpty)
+                  IconButton(
+                    icon: Icon(
+                      Icons.cancel_rounded,
+                      size: 18,
+                      color: Colors.white.withValues(alpha: 0.5),
+                    ),
+                    onPressed: () {
+                      _searchController.clear();
+                      _onQueryChanged('');
+                    },
+                  )
+                else
+                  const SizedBox(width: 8),
+              ],
             ),
           ),
         ),
@@ -226,610 +287,887 @@ class _DiscoverPageState extends State<DiscoverPage> {
     );
   }
 
-  List<Widget> _buildSearchResults(BuildContext context, String query) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
+  Widget _buildRecentSearchChips() {
+    final recents = widget.store.recentSearches;
+    if (recents.isEmpty) return const SizedBox.shrink();
 
-    final matchedTracks = widget.store.searchLocalTracks(query);
-    final hasEnabledPlugins = widget.store.plugins.any((p) => p.enabled);
-
-    final matchedPlaylists = widget.store.playlists.where((playlist) {
-      return playlist.name.toLowerCase().contains(query);
-    }).toList();
-
-    return [
-      if (hasEnabledPlugins)
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-            child: Row(
-              children: [
-                FilledButton.tonalIcon(
-                  onPressed: _searchingOnline ? null : _triggerOnlineSearch,
-                  icon: _searchingOnline
-                      ? const SizedBox(
-                          width: 14,
-                          height: 14,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.travel_explore_rounded, size: 18),
-                  label: Text(_searchingOnline ? '正在通过插件搜索...' : '用已启用插件全网搜索'),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 2, 16, 18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text(
+                '最近搜索',
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.72),
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
                 ),
-                const SizedBox(width: 8),
-                if (_onlineResults.isNotEmpty)
-                  Text(
-                    '找到 ${_onlineResults.length} 首',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: colorScheme.primary,
+              ),
+              const Spacer(),
+              GestureDetector(
+                onTap: () => widget.store.clearSearchHistory(),
+                child: Text(
+                  '清空',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.42),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: recents.map((term) {
+              return GestureDetector(
+                onTap: () => _applyRecentSearch(term),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 7,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.07),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.08),
                     ),
                   ),
-              ],
-            ),
-          ),
-        ),
-      if (_onlineResults.isNotEmpty) ...[
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
-            child: Text(
-              '插件在线搜索结果 (${_onlineResults.length})',
-              style: theme.textTheme.titleSmall?.copyWith(
-                fontWeight: FontWeight.w700,
-                color: colorScheme.primary,
-              ),
-            ),
-          ),
-        ),
-        SliverList(
-          delegate: SliverChildBuilderDelegate(
-            (context, index) {
-              final track = _onlineResults[index];
-              return ListTile(
-                leading: Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: colorScheme.primary.withValues(alpha: 0.16),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Icon(
-                    Icons.cloud_queue_rounded,
-                    color: colorScheme.primary,
+                  child: Text(
+                    term,
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.86),
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w500,
+                    ),
                   ),
                 ),
-                title: Text(
-                  track.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                subtitle: Text(
-                  '${track.artist} · ${track.sourcePlatform ?? "插件音源"}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                trailing: const Icon(Icons.play_circle_filled_rounded),
-                onTap: () => _playTracks(_onlineResults, initialIndex: index),
               );
-            },
-            childCount: _onlineResults.length,
+            }).toList(),
           ),
-        ),
-      ],
-      if (matchedTracks.isEmpty &&
-          matchedPlaylists.isEmpty &&
-          _onlineResults.isEmpty)
-        SliverFillRemaining(
-          hasScrollBody: false,
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.all(32),
-              child: Text(
-                hasEnabledPlugins
-                    ? '本地未匹配，可点击上方按钮用已导入插件搜索'
-                    : '未找到匹配的歌曲或歌单（支持繁简互搜）',
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: colorScheme.onSurface.withValues(alpha: 0.55),
-                ),
-              ),
-            ),
-          ),
-        ),
-      if (matchedPlaylists.isNotEmpty) ...[
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-            child: Text(
-              '匹配歌单 (${matchedPlaylists.length})',
-              style: theme.textTheme.titleSmall?.copyWith(
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ),
-        ),
-        SliverList(
-          delegate: SliverChildBuilderDelegate(
-            (context, index) {
-              final playlist = matchedPlaylists[index];
-              return ListTile(
-                leading: Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: colorScheme.primary.withValues(alpha: 0.14),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Icon(
-                    Icons.queue_music_rounded,
-                    color: colorScheme.primary,
-                  ),
-                ),
-                title: Text(playlist.name),
-                subtitle: Text('${widget.store.tracksInPlaylist(playlist.id).length} 首歌曲'),
-                trailing: const Icon(Icons.play_arrow_rounded),
-                onTap: () => _playTracks(widget.store.tracksInPlaylist(playlist.id)),
-              );
-            },
-            childCount: matchedPlaylists.length,
-          ),
-        ),
-      ],
-      if (matchedTracks.isNotEmpty) ...[
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-            child: Text(
-              '匹配歌曲 (${matchedTracks.length})',
-              style: theme.textTheme.titleSmall?.copyWith(
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ),
-        ),
-        SliverList(
-          delegate: SliverChildBuilderDelegate(
-            (context, index) {
-              final track = matchedTracks[index];
-              return ListTile(
-                leading: Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: colorScheme.secondary.withValues(alpha: 0.14),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Icon(
-                    Icons.music_note_rounded,
-                    color: colorScheme.secondary,
-                  ),
-                ),
-                title: Text(
-                  track.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                subtitle: Text(
-                  '${track.artist} · ${track.album}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                trailing: const Icon(Icons.play_circle_outline_rounded),
-                onTap: () => _playTracks(matchedTracks, initialIndex: index),
-              );
-            },
-            childCount: matchedTracks.length,
-          ),
-        ),
-      ],
-    ];
+        ],
+      ),
+    );
   }
 
-  List<Widget> _buildDiscoverContent(BuildContext context, List<Track> library) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    final modeLabel = _recommendModeLabel(widget.store.recommendMode);
-    final albums = _groupAlbums(library).entries.toList();
+  Widget _buildSearchResults() {
+    final localResults = widget.store.searchLocalTracks(_query);
+    final onlineResults = _onlineResults;
 
-    final recentTracks = List<Track>.from(library);
-    final freshTracks = List<Track>.from(library.reversed);
-
-    return [
-      SliverToBoxAdapter(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
-          child: Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(24),
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  colorScheme.primary.withValues(alpha: 0.92),
-                  colorScheme.tertiary.withValues(alpha: 0.84),
-                ],
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 120),
+      children: [
+        if (widget.store.recentSearches.isNotEmpty) ...[
+          _buildRecentSearchChips(),
+        ],
+        Row(
+          children: [
+            Text(
+              '本地曲库匹配 (${localResults.length})',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 15,
+                fontWeight: FontWeight.w700,
               ),
-              boxShadow: [
-                BoxShadow(
-                  color: colorScheme.primary.withValues(alpha: 0.25),
-                  blurRadius: 20,
-                  offset: const Offset(0, 10),
-                ),
-              ],
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
+            const Spacer(),
+            GestureDetector(
+              onTap: _isSearchingOnline ? null : () => _submitSearch(_query),
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: _emeraldBox,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 4,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.2),
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Text(
-                        modeLabel,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
+                    if (_isSearchingOnline)
+                      const SizedBox(
+                        width: 12,
+                        height: 12,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: _emerald,
                         ),
+                      )
+                    else
+                      const Icon(
+                        Icons.travel_explore_rounded,
+                        size: 14,
+                        color: _emerald,
                       ),
-                    ),
-                    const Spacer(),
-                    Icon(
-                      Icons.auto_awesome_rounded,
-                      color: Colors.white.withValues(alpha: 0.9),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                const Text(
-                  '今日推荐',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 26,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: -0.5,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  '根据你的本地听歌偏好实时生成专属队列',
-                  style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.85),
-                    fontSize: 13,
-                  ),
-                ),
-                const SizedBox(height: 18),
-                Row(
-                  children: [
-                    FilledButton.icon(
-                      onPressed: () {
-                        widget.store.setRecommendMode(widget.store.recommendMode);
-                        widget.onOpenPlayer();
-                      },
-                      style: FilledButton.styleFrom(
-                        backgroundColor: Colors.white,
-                        foregroundColor: colorScheme.primary,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 18,
-                          vertical: 10,
-                        ),
-                      ),
-                      icon: const Icon(Icons.play_arrow_rounded),
-                      label: const Text(
-                        '立即播放',
-                        style: TextStyle(fontWeight: FontWeight.w700),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    OutlinedButton.icon(
-                      onPressed: () {
-                        showSmartRecommendSheet(context, widget.store);
-                      },
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.white,
-                        side: BorderSide(
-                          color: Colors.white.withValues(alpha: 0.45),
-                        ),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 10,
-                        ),
-                      ),
-                      icon: const Icon(Icons.tune_rounded, size: 18),
-                      label: const Text('切换模式'),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-      SliverToBoxAdapter(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
-          child: InkWell(
-            borderRadius: BorderRadius.circular(18),
-            onTap: () {
-              widget.store.playDemo();
-              widget.onOpenPlayer();
-            },
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(18),
-                color: colorScheme.secondaryContainer.withValues(alpha: 0.55),
-                border: Border.all(
-                  color: colorScheme.secondary.withValues(alpha: 0.25),
-                ),
-              ),
-              child: Row(
-                children: [
-                  Container(
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(
-                      color: colorScheme.secondary.withValues(alpha: 0.18),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Icon(
-                      Icons.lyrics_rounded,
-                      color: colorScheme.secondary,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      '一键演示 (ColorOS 17 逐字/灵动岛实测)',
-                      style: theme.textTheme.titleSmall?.copyWith(
+                    const SizedBox(width: 6),
+                    Text(
+                      _isSearchingOnline ? '搜索中...' : '搜在线曲库',
+                      style: const TextStyle(
+                        color: _emerald,
+                        fontSize: 12,
                         fontWeight: FontWeight.w700,
                       ),
                     ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        if (localResults.isEmpty)
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 22),
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: _cardSurface,
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Text(
+              '本地曲库暂无匹配，可点击右上角搜索在线曲库',
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.48),
+                fontSize: 13,
+              ),
+            ),
+          )
+        else
+          ...List.generate(localResults.length, (index) {
+            final track = localResults[index];
+            return _SearchTrackTile(
+              track: track,
+              badge: '本地',
+              onTap: () => _playTrackList(localResults, index: index),
+            );
+          }),
+        if (onlineResults.isNotEmpty) ...[
+          const SizedBox(height: 20),
+          Text(
+            '在线搜索结果 (${onlineResults.length})',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 15,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 10),
+          ...List.generate(onlineResults.length, (index) {
+            final track = onlineResults[index];
+            return _SearchTrackTile(
+              track: track,
+              badge: '在线',
+              onTap: () => _playTrackList(onlineResults, index: index),
+            );
+          }),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildDiscoverFeed(bool showSearchPanel) {
+    final library = widget.store.library;
+    final playlists = widget.store.playlists;
+    final albumMap = <String, List<Track>>{};
+    for (final t in library) {
+      final key = t.album.trim().isEmpty ? '未知专辑' : t.album;
+      albumMap.putIfAbsent(key, () => <Track>[]).add(t);
+    }
+    final albums = albumMap.entries.map((e) => (name: e.key, tracks: e.value)).toList();
+
+    final collections = <_PlaylistGridItem>[
+      _PlaylistGridItem(
+        title: '深夜放空 · 城市漫游',
+        trackCount: math.max(library.length, 12),
+        gradientColors: const [Color(0xFF1E3A5F), Color(0xFF0E1826)],
+        coverTrack: library.isNotEmpty ? library.first : null,
+        onTap: () => _playTrackList(library),
+      ),
+      _PlaylistGridItem(
+        title: '晨跑节奏 · 能量补给',
+        trackCount: math.max(library.length, 18),
+        gradientColors: const [Color(0xFF1B4332), Color(0xFF0D1F18)],
+        coverTrack: library.length > 1 ? library[1] : null,
+        onTap: () => _playTrackList(library.reversed.toList()),
+      ),
+      _PlaylistGridItem(
+        title: '专注工作 · 轻电子白噪',
+        trackCount: math.max(library.length, 15),
+        gradientColors: const [Color(0xFF3C2A4D), Color(0xFF17101E)],
+        coverTrack: library.length > 2 ? library[2] : null,
+        onTap: () => _playTrackList(library),
+      ),
+      _PlaylistGridItem(
+        title: '逐字歌词 · 精选示范',
+        trackCount: 8,
+        gradientColors: const [Color(0xFF4A2511), Color(0xFF1D1008)],
+        coverTrack: library.length > 3 ? library[3] : null,
+        onTap: () {
+          widget.store.playDemo();
+          widget.onOpenPlayer();
+        },
+      ),
+      for (final pl in playlists)
+        _PlaylistGridItem(
+          title: pl.name,
+          trackCount: widget.store.tracksInPlaylist(pl.id).length,
+          gradientColors: const [Color(0xFF1E2D30), Color(0xFF101719)],
+          coverTrack: widget.store.tracksInPlaylist(pl.id).isNotEmpty ? widget.store.tracksInPlaylist(pl.id).first : null,
+          onTap: () => _playTrackList(widget.store.tracksInPlaylist(pl.id)),
+        ),
+      for (final album in albums)
+        _PlaylistGridItem(
+          title: album.name,
+          trackCount: album.tracks.length,
+          gradientColors: const [Color(0xFF2B253A), Color(0xFF12101A)],
+          coverTrack: album.tracks.isNotEmpty ? album.tracks.first : null,
+          onTap: () => _playTrackList(album.tracks),
+        ),
+    ];
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 120),
+      children: [
+        if (showSearchPanel) _buildRecentSearchChips(),
+        _SectionHeader(
+          icon: Icons.show_chart_rounded,
+          title: '曲库排行榜',
+          subtitle: '实时榜 · 每小时更新',
+        ),
+        const SizedBox(height: 14),
+        _buildHotChartHeroCard(library),
+        const SizedBox(height: 10),
+        _ChartRowCard(
+          title: '新歌榜',
+          subtitle: '实时榜单 · 整榜播放',
+          track: library.length > 1
+              ? library[1]
+              : (library.isNotEmpty ? library.first : null),
+          fallbackGradient: const [Color(0xFF1D3E4E), Color(0xFF0F2028)],
+          onTap: () => _playTrackList(library.reversed.toList()),
+        ),
+        const SizedBox(height: 10),
+        _ChartRowCard(
+          title: '逐字演示榜',
+          subtitle: '实时榜单 · 整榜播放',
+          track: library.length > 2
+              ? library[2]
+              : (library.isNotEmpty ? library.first : null),
+          fallbackGradient: const [Color(0xFF1B4530), Color(0xFF0D2117)],
+          onTap: () {
+            widget.store.playDemo();
+            widget.onOpenPlayer();
+          },
+        ),
+        const SizedBox(height: 26),
+        _SectionHeader(
+          icon: Icons.grid_view_rounded,
+          title: '精选歌单',
+          subtitle: '按心情与场景挑好 · 点开即整单播放',
+        ),
+        const SizedBox(height: 14),
+        GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: collections.length,
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 2,
+            mainAxisSpacing: 12,
+            crossAxisSpacing: 12,
+            childAspectRatio: 1.0,
+          ),
+          itemBuilder: (context, index) {
+            return _PlaylistGridCard(item: collections[index]);
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _buildHotChartHeroCard(List<dynamic> library) {
+    return GestureDetector(
+      onTap: () => _playTrackList(library),
+      child: Container(
+        height: 188,
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(24),
+          gradient: const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFF162229), Color(0xFF11181C)],
+          ),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.10),
+          ),
+        ),
+        child: Stack(
+          children: [
+            Positioned(
+              right: -10,
+              top: 22,
+              child: SizedBox(
+                width: 220,
+                height: 140,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    _FannedCoverCard(
+                      angle: -0.18,
+                      offset: const Offset(-42, 12),
+                      track: library.length > 2 ? library[2] : null,
+                      fallbackColors: const [
+                        Color(0xFF284654),
+                        Color(0xFF14242C),
+                      ],
+                    ),
+                    _FannedCoverCard(
+                      angle: 0.14,
+                      offset: const Offset(42, 10),
+                      track: library.length > 1 ? library[1] : null,
+                      fallbackColors: const [
+                        Color(0xFF2C4A3A),
+                        Color(0xFF13241B),
+                      ],
+                    ),
+                    _FannedCoverCard(
+                      angle: -0.02,
+                      offset: const Offset(0, 0),
+                      track: library.isNotEmpty
+                          ? library.first
+                          : null,
+                      fallbackColors: const [
+                        Color(0xFF2FE08B),
+                        Color(0xFF135035),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.centerLeft,
+                    end: Alignment.centerRight,
+                    colors: [
+                      const Color(0xFF11181C).withValues(alpha: 0.92),
+                      const Color(0xFF11181C).withValues(alpha: 0.45),
+                      Colors.transparent,
+                    ],
+                    stops: const [0.0, 0.48, 0.88],
                   ),
-                  Icon(
-                    Icons.chevron_right_rounded,
-                    color: colorScheme.onSurface.withValues(alpha: 0.6),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF183B29),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: const Text(
+                      '🔥 HOT',
+                      style: TextStyle(
+                        color: _emerald,
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0.4,
+                      ),
+                    ),
+                  ),
+                  const Spacer(),
+                  const Text(
+                    '热歌榜',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 22,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: -0.3,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '实时热度 · 点开整榜播放',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.58),
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w500,
+                    ),
                   ),
                 ],
               ),
             ),
-          ),
+          ],
         ),
       ),
-      SliverToBoxAdapter(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 22, 16, 10),
-          child: Text(
-            '本地精选合集',
-            style: theme.textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w700,
-            ),
+    );
+  }
+}
+
+class _CircleGlassButton extends StatelessWidget {
+  const _CircleGlassButton({
+    required this.icon,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 42,
+        height: 42,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: Colors.white.withValues(alpha: 0.08),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.10),
           ),
         ),
+        child: Icon(
+          icon,
+          color: Colors.white,
+          size: 22,
+        ),
       ),
-      SliverToBoxAdapter(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Row(
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Container(
+          width: 36,
+          height: 36,
+          decoration: BoxDecoration(
+            color: const Color(0xFF123626),
+            borderRadius: BorderRadius.circular(11),
+          ),
+          child: Icon(
+            icon,
+            color: const Color(0xFF2FE08B),
+            size: 20,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(
-                child: _CuratedCard(
-                  title: '全部本地音乐',
-                  subtitle: '${library.length} 首',
-                  icon: Icons.library_music_rounded,
-                  accent: colorScheme.primary,
-                  onTap: () => _playTracks(library),
+              Text(
+                title,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -0.3,
                 ),
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _CuratedCard(
-                  title: '最近常听',
-                  subtitle: '${recentTracks.length} 首',
-                  icon: Icons.history_rounded,
-                  accent: colorScheme.secondary,
-                  onTap: () => _playTracks(recentTracks),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _CuratedCard(
-                  title: '新鲜未听',
-                  subtitle: '${freshTracks.length} 首',
-                  icon: Icons.explore_rounded,
-                  accent: colorScheme.tertiary,
-                  onTap: () => _playTracks(freshTracks),
+              const SizedBox(height: 1),
+              Text(
+                subtitle,
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.50),
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w500,
                 ),
               ),
             ],
           ),
         ),
-      ),
-      SliverToBoxAdapter(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 24, 16, 12),
-          child: Text(
-            '本地专辑',
-            style: theme.textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ),
-      ),
-      if (albums.isEmpty)
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Text(
-              '暂无本地专辑',
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: colorScheme.onSurface.withValues(alpha: 0.55),
-              ),
-            ),
-          ),
-        )
-      else
-        SliverToBoxAdapter(
-          child: SizedBox(
-            height: 176,
-            child: ListView.separated(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              scrollDirection: Axis.horizontal,
-              physics: const BouncingScrollPhysics(),
-              itemCount: albums.length,
-              separatorBuilder: (context, index) => const SizedBox(width: 12),
-              itemBuilder: (context, index) {
-                final entry = albums[index];
-                final albumTracks = entry.value;
-                final firstTrack = albumTracks.first;
-
-                return GestureDetector(
-                  onTap: () => _playTracks(albumTracks),
-                  child: SizedBox(
-                    width: 132,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Container(
-                          width: 132,
-                          height: 120,
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(18),
-                            gradient: LinearGradient(
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                              colors: [
-                                colorScheme.primary.withValues(alpha: 0.25),
-                                colorScheme.tertiary.withValues(alpha: 0.18),
-                              ],
-                            ),
-                            border: Border.all(
-                              color: colorScheme.onSurface.withValues(alpha: 0.08),
-                            ),
-                          ),
-                          child: Stack(
-                            children: [
-                              Center(
-                                child: Icon(
-                                  Icons.album_rounded,
-                                  size: 48,
-                                  color: colorScheme.primary.withValues(alpha: 0.8),
-                                ),
-                              ),
-                              Positioned(
-                                right: 8,
-                                bottom: 8,
-                                child: Container(
-                                  padding: const EdgeInsets.all(4),
-                                  decoration: BoxDecoration(
-                                    color: colorScheme.surface.withValues(alpha: 0.85),
-                                    shape: BoxShape.circle,
-                                  ),
-                                  child: Icon(
-                                    Icons.play_arrow_rounded,
-                                    size: 16,
-                                    color: colorScheme.primary,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          entry.key,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        Text(
-                          '${firstTrack.artist} · ${albumTracks.length}首',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: colorScheme.onSurface.withValues(alpha: 0.6),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-        ),
-    ];
+      ],
+    );
   }
 }
 
-class _CuratedCard extends StatelessWidget {
-  const _CuratedCard({
+class _FannedCoverCard extends StatelessWidget {
+  const _FannedCoverCard({
+    required this.angle,
+    required this.offset,
+    required this.track,
+    required this.fallbackColors,
+  });
+
+  final double angle;
+  final Offset offset;
+  final dynamic track;
+  final List<Color> fallbackColors;
+
+  @override
+  Widget build(BuildContext context) {
+    return Transform.translate(
+      offset: offset,
+      child: Transform.rotate(
+        angle: angle,
+        child: Container(
+          width: 106,
+          height: 106,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(18),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.45),
+                blurRadius: 16,
+                offset: const Offset(0, 8),
+              ),
+            ],
+            border: Border.all(
+              color: Colors.white.withValues(alpha: 0.14),
+            ),
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: fallbackColors,
+            ),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: track != null
+              ? CoverArtWidget(
+                  accentColor: const Color(0xFF2FE08B),
+                  track: track,
+                  size: 106,
+                  borderRadius: 18,
+                )
+              : Center(
+                  child: Icon(
+                    Icons.music_note_rounded,
+                    color: Colors.white.withValues(alpha: 0.72),
+                    size: 36,
+                  ),
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ChartRowCard extends StatelessWidget {
+  const _ChartRowCard({
     required this.title,
     required this.subtitle,
-    required this.icon,
-    required this.accent,
+    required this.track,
+    required this.fallbackGradient,
     required this.onTap,
   });
 
   final String title;
   final String subtitle;
-  final IconData icon;
-  final Color accent;
+  final dynamic track;
+  final List<Color> fallbackGradient;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    return InkWell(
+    return GestureDetector(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(18),
       child: Container(
-        padding: const EdgeInsets.all(14),
+        padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
+          color: const Color(0xFF151A1C),
           borderRadius: BorderRadius.circular(18),
-          color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.42),
           border: Border.all(
-            color: accent.withValues(alpha: 0.2),
+            color: Colors.white.withValues(alpha: 0.06),
           ),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        child: Row(
           children: [
             Container(
-              width: 36,
-              height: 36,
+              width: 56,
+              height: 56,
+              clipBehavior: Clip.antiAlias,
               decoration: BoxDecoration(
-                color: accent.withValues(alpha: 0.16),
+                borderRadius: BorderRadius.circular(14),
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: fallbackGradient,
+                ),
+              ),
+              child: track != null
+                  ? CoverArtWidget(
+                  accentColor: const Color(0xFF2FE08B),
+                      track: track,
+                      size: 56,
+                      borderRadius: 14,
+                    )
+                  : Icon(
+                      Icons.graphic_eq_rounded,
+                      color: Colors.white.withValues(alpha: 0.8),
+                      size: 26,
+                    ),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.48),
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              Icons.chevron_right_rounded,
+              color: Colors.white.withValues(alpha: 0.45),
+              size: 24,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PlaylistGridItem {
+  const _PlaylistGridItem({
+    required this.title,
+    required this.trackCount,
+    required this.gradientColors,
+    required this.coverTrack,
+    required this.onTap,
+  });
+
+  final String title;
+  final int trackCount;
+  final List<Color> gradientColors;
+  final dynamic coverTrack;
+  final VoidCallback onTap;
+}
+
+class _PlaylistGridCard extends StatelessWidget {
+  const _PlaylistGridCard({required this.item});
+
+  final _PlaylistGridItem item;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: item.onTap,
+      child: Container(
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: item.gradientColors,
+          ),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.08),
+          ),
+        ),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            if (item.coverTrack != null)
+              Opacity(
+                opacity: 0.85,
+                child: CoverArtWidget(
+                  accentColor: const Color(0xFF2FE08B),
+                  track: item.coverTrack,
+                  size: 180,
+                  borderRadius: 20,
+                ),
+              ),
+            DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.black.withValues(alpha: 0.12),
+                    Colors.black.withValues(alpha: 0.25),
+                    Colors.black.withValues(alpha: 0.82),
+                  ],
+                  stops: const [0.0, 0.48, 1.0],
+                ),
+              ),
+            ),
+            Positioned(
+              top: 12,
+              left: 12,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 9,
+                  vertical: 4,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.52),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.12),
+                  ),
+                ),
+                child: const Text(
+                  '▶ 歌单',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              left: 12,
+              right: 12,
+              bottom: 12,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    item.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14.5,
+                      fontWeight: FontWeight.w800,
+                      height: 1.2,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '${item.trackCount} 首歌曲',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.65),
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SearchTrackTile extends StatelessWidget {
+  const _SearchTrackTile({
+    required this.track,
+    required this.badge,
+    required this.onTap,
+  });
+
+  final dynamic track;
+  final String badge;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: const Color(0xFF151A1C),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.06),
+          ),
+        ),
+        child: Row(
+          children: [
+            CoverArtWidget(
+                  accentColor: const Color(0xFF2FE08B),
+              track: track,
+              size: 46,
+              borderRadius: 12,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    track.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14.5,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    track.artist,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.52),
+                      fontSize: 12.5,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.08),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: Icon(icon, color: accent, size: 20),
-            ),
-            const SizedBox(height: 12),
-            Text(
-              title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.titleSmall?.copyWith(
-                fontWeight: FontWeight.w700,
-                fontSize: 13,
-              ),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              subtitle,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: colorScheme.onSurface.withValues(alpha: 0.6),
-                fontSize: 11,
+              child: Text(
+                badge,
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.72),
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
           ],

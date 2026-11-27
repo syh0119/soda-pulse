@@ -110,23 +110,69 @@ class PlaybackService : Service() {
     private var isTicking = false
     private var lastPlaybackPushMs = 0L
     private var fadeStep = 0
+    private var isDucked = false
+    private var pendingFadeIn = false
+    private var isFadingIn = false
+
     private val fadeInRunnable = object : Runnable {
         override fun run() {
-            if (!::player.isInitialized || !player.isPlaying) return
-            fadeStep++
-            val targetVol = (fadeStep / 8f).coerceIn(0.05f, 1.0f)
-            player.volume = targetVol
-            if (fadeStep < 8) {
-                tickHandler.postDelayed(this, 30L)
+            if (!::player.isInitialized) {
+                isFadingIn = false
+                pendingFadeIn = false
+                return
             }
+            if (isDucked) {
+                isFadingIn = false
+                pendingFadeIn = false
+                player.volume = 0.25f
+                return
+            }
+            if (!player.isPlaying) {
+                isFadingIn = false
+                pendingFadeIn = false
+                player.volume = 1.0f
+                return
+            }
+            fadeStep++
+            val targetVol = (fadeStep / 4f).coerceIn(0.25f, 1.0f)
+            player.volume = targetVol
+            if (fadeStep < 4) {
+                tickHandler.postDelayed(this, 30L)
+            } else {
+                isFadingIn = false
+                player.volume = 1.0f
+            }
+        }
+    }
+
+    private fun cancelFadeIn(restoreVolume: Boolean = true) {
+        tickHandler.removeCallbacks(fadeInRunnable)
+        isFadingIn = false
+        pendingFadeIn = false
+        if (restoreVolume && ::player.isInitialized) {
+            player.volume = if (isDucked) 0.25f else 1.0f
         }
     }
 
     private fun startFadeIn() {
         tickHandler.removeCallbacks(fadeInRunnable)
         if (!::player.isInitialized) return
+        if (isDucked) {
+            isFadingIn = false
+            pendingFadeIn = false
+            player.volume = 0.25f
+            return
+        }
+        if (!player.isPlaying) {
+            pendingFadeIn = true
+            isFadingIn = false
+            player.volume = 1.0f
+            return
+        }
+        pendingFadeIn = false
+        isFadingIn = true
         fadeStep = 0
-        player.volume = 0.05f
+        player.volume = 0.25f
         tickHandler.postDelayed(fadeInRunnable, 30L)
     }
 
@@ -135,6 +181,9 @@ class PlaybackService : Service() {
             if (!::player.isInitialized || !player.isPlaying) {
                 isTicking = false
                 return
+            }
+            if (!isDucked && !isFadingIn && player.volume < 0.99f) {
+                player.volume = 1.0f
             }
             val posMs = player.currentPosition.coerceAtLeast(0L)
             lyricRouter.onPositionTick(posMs, true, lyricOffsetMs)
@@ -161,21 +210,28 @@ class PlaybackService : Service() {
             AudioManager.AUDIOFOCUS_LOSS -> {
                 resumeOnFocusGain = false
                 hasAudioFocus = false
+                isDucked = false
+                cancelFadeIn(restoreVolume = true)
                 pause()
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                 resumeOnFocusGain = ::player.isInitialized && player.isPlaying
+                isDucked = false
+                cancelFadeIn(restoreVolume = true)
                 pause()
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                isDucked = true
+                cancelFadeIn(restoreVolume = false)
                 if (::player.isInitialized) {
                     player.volume = 0.25f
                 }
             }
             AudioManager.AUDIOFOCUS_GAIN -> {
                 hasAudioFocus = true
+                isDucked = false
+                cancelFadeIn(restoreVolume = true)
                 if (::player.isInitialized) {
-                    player.volume = 1.0f
                     if (resumeOnFocusGain) {
                         resumeOnFocusGain = false
                         play()
@@ -234,8 +290,16 @@ class PlaybackService : Service() {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             updateMediaSessionPlaybackState()
             if (isPlaying) {
+                if (pendingFadeIn && !isDucked) {
+                    startFadeIn()
+                } else if (!isDucked && !isFadingIn && ::player.isInitialized) {
+                    player.volume = 1.0f
+                }
                 startTickLoop()
             } else {
+                if (isFadingIn) {
+                    cancelFadeIn(restoreVolume = true)
+                }
                 stopTickLoop()
                 if (::player.isInitialized) {
                     lyricRouter.onPositionTick(
@@ -389,6 +453,7 @@ class PlaybackService : Service() {
     }
 
     override fun onDestroy() {
+        cancelFadeIn(restoreVolume = false)
         stopTickLoop()
         try {
             unregisterReceiver(becomingNoisyReceiver)
@@ -465,11 +530,14 @@ class PlaybackService : Service() {
 
         val mediaUri = resolveMediaUri(uriRaw)
         if (mediaUri != null) {
+            isDucked = false
+            cancelFadeIn(restoreVolume = true)
+            pendingFadeIn = true
+            player.volume = 1.0f
             player.setMediaItem(MediaItem.fromUri(mediaUri))
             player.prepare()
             requestAudioFocus()
             player.play()
-            startFadeIn()
         }
 
         updateMediaMetadata(lyricInfoJson = null)
@@ -538,6 +606,8 @@ class PlaybackService : Service() {
 
     fun play() {
         if (!::player.isInitialized) return
+        isDucked = false
+        cancelFadeIn(restoreVolume = true)
         requestAudioFocus()
         player.play()
         updateMediaSessionPlaybackState()
@@ -578,6 +648,7 @@ class PlaybackService : Service() {
     }
 
     fun stopPlayback() {
+        cancelFadeIn(restoreVolume = false)
         stopTickLoop()
         if (::player.isInitialized) {
             player.stop()

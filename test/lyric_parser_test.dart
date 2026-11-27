@@ -195,5 +195,21 @@ void main() {
         isTrue,
       );
     });
+
+    test('empty timestamp markers cap preceding line endMs without leaving blank lines', () {
+      const lrcWithBreaks = '''
+[00:00.95]
+[00:17.87]Lala lalu lula
+[00:21.99]
+[00:25.43]Next sung line
+''';
+      final doc = LyricParser.parse(lrcWithBreaks);
+      expect(doc.lines, hasLength(2));
+      expect(doc.lines[0].text, 'Lala lalu lula');
+      expect(doc.lines[0].startMs, 17870);
+      expect(doc.lines[0].endMs, 21990);
+      expect(doc.lines[1].text, 'Next sung line');
+      expect(doc.hasWordTiming, isFalse);
+    });
   });
 }

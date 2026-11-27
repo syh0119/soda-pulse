@@ -1,23 +1,33 @@
-import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
+import 'dart:ui';
 
 import 'package:flutter/material.dart';
-import 'package:soda_pulse/core/app_store.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:soda_pulse/lyrics/lyric_models.dart';
 import 'package:soda_pulse/models/track.dart';
+import 'package:soda_pulse/core/app_store.dart';
+import 'package:soda_pulse/ui/pages/sub_pages.dart';
 import 'package:soda_pulse/ui/pages/drive_page.dart';
 import 'package:soda_pulse/ui/pages/full_lyrics_page.dart';
 import 'package:soda_pulse/ui/pages/island_settings_page.dart';
-import 'package:soda_pulse/ui/pages/sub_pages.dart';
 import 'package:soda_pulse/ui/sheets/player_sheets.dart';
 import 'package:soda_pulse/ui/theme/soda_theme.dart';
 import 'package:soda_pulse/ui/widgets/karaoke_lyric_view.dart';
-import 'package:soda_pulse/ui/widgets/star_skin_bg.dart';
 
 class ImmersivePlayerPage extends StatefulWidget {
-  const ImmersivePlayerPage({super.key, required this.store});
+  const ImmersivePlayerPage({
+    super.key,
+    required this.store,
+    this.onOpenDiscover,
+    this.onOpenMine,
+    this.onOpenSearch,
+  });
 
   final AppStore store;
+  final VoidCallback? onOpenDiscover;
+  final VoidCallback? onOpenMine;
+  final VoidCallback? onOpenSearch;
 
   @override
   State<ImmersivePlayerPage> createState() => _ImmersivePlayerPageState();
@@ -25,89 +35,265 @@ class ImmersivePlayerPage extends StatefulWidget {
 
 class _ImmersivePlayerPageState extends State<ImmersivePlayerPage>
     with SingleTickerProviderStateMixin {
-  late final PageController _pageController;
-  late final AnimationController _breathController;
-  final ValueNotifier<int> _tickNotifier = ValueNotifier<int>(0);
-
-  Timer? _progressTimer;
-  double? _dragValueMs;
+  late PageController _pageController;
+  late PageController _contentPageController;
+  late final Ticker _lyricTicker;
+  final ValueNotifier<int> _livePosNotifier = ValueNotifier<int>(0);
+  final ValueNotifier<double> _lyricsPageProgress = ValueNotifier<double>(0.0);
   int _lastSyncedIndex = -1;
-  bool _isProgrammaticJump = false;
+  bool _isSyncingPage = false;
+  bool _isOnLyricsTab = false;
+  late bool _lastPureMode;
+  late PlayerStyle _lastPlayerStyle;
+  late bool _lastQueueEmpty;
+
+  bool _isDraggingSlider = false;
+  double _dragPositionMs = 0;
+  bool _shownStartupToast = false;
+  double _coverDragDx = 0;
+
+  AppStore get store => widget.store;
 
   @override
   void initState() {
     super.initState();
-    final int initialIndex = _clampedCurrentIndex();
-    _lastSyncedIndex = initialIndex;
-    _pageController = PageController(initialPage: initialIndex);
-
-    _breathController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 3600),
+    _lastSyncedIndex = store.currentIndex;
+    _lastPureMode = store.pureMode;
+    _lastPlayerStyle = store.playerStyle;
+    _lastQueueEmpty = store.queue.isEmpty;
+    _pageController = PageController(
+      initialPage: math.max(0, store.currentIndex),
     );
-    if (widget.store.isPlaying) {
-      _breathController.repeat(reverse: true);
-    }
-
-    _progressTimer = Timer.periodic(const Duration(milliseconds: 120), (_) {
+    _contentPageController = PageController(initialPage: 0)
+      ..addListener(_onContentScroll);
+    _livePosNotifier.value = store.livePositionMs;
+    _lyricTicker = createTicker((_) {
       if (!mounted) return;
-      if (widget.store.isPlaying && _dragValueMs == null) {
-        _tickNotifier.value++;
+      final pos = store.livePositionMs;
+      if (pos != _livePosNotifier.value) {
+        _livePosNotifier.value = pos;
       }
     });
+    if (store.isPlaying) {
+      _lyricTicker.start();
+    }
+    store.addListener(_onStoreChanged);
 
-    widget.store.addListener(_handleStoreChange);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _shownStartupToast) return;
+      final toast = store.startupPluginToast;
+      if (toast != null && toast.isNotEmpty) {
+        _shownStartupToast = true;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(toast),
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant ImmersivePlayerPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.store != widget.store) {
+      oldWidget.store.removeListener(_onStoreChanged);
+      widget.store.addListener(_onStoreChanged);
+      _lastSyncedIndex = widget.store.currentIndex;
+      _lastPureMode = widget.store.pureMode;
+      _lastPlayerStyle = widget.store.playerStyle;
+      _lastQueueEmpty = widget.store.queue.isEmpty;
+    }
   }
 
   @override
   void dispose() {
-    widget.store.removeListener(_handleStoreChange);
-    _progressTimer?.cancel();
-    _breathController.dispose();
+    store.removeListener(_onStoreChanged);
+    _lyricTicker.dispose();
+    _livePosNotifier.dispose();
+    _lyricsPageProgress.dispose();
+    _contentPageController.removeListener(_onContentScroll);
+    _contentPageController.dispose();
     _pageController.dispose();
-    _tickNotifier.dispose();
     super.dispose();
   }
 
-  int _clampedCurrentIndex() {
-    final int count = widget.store.queue.length;
-    if (count == 0) return 0;
-    return widget.store.currentIndex.clamp(0, count - 1);
+  void _onContentScroll() {
+    if (!_contentPageController.hasClients) return;
+    final page = _contentPageController.page ?? (_isOnLyricsTab ? 1.0 : 0.0);
+    _lyricsPageProgress.value = page.clamp(0.0, 1.0);
   }
 
-  void _handleStoreChange() {
-    if (!mounted) return;
+  void _animateToLyricsTab() {
+    if (_contentPageController.hasClients) {
+      _contentPageController.animateToPage(
+        1,
+        duration: const Duration(milliseconds: 380),
+        curve: Curves.easeOutCubic,
+      );
+    } else {
+      _openFullLyrics();
+    }
+  }
 
-    if (widget.store.isPlaying) {
-      if (!_breathController.isAnimating) {
-        _breathController.repeat(reverse: true);
+  void _animateToCoverTab() {
+    if (_contentPageController.hasClients) {
+      _contentPageController.animateToPage(
+        0,
+        duration: const Duration(milliseconds: 360),
+        curve: Curves.easeOutCubic,
+      );
+    }
+  }
+
+  void _recreatePageControllerForIndex(int targetIndex) {
+    final oldCtrl = _pageController;
+    _pageController = PageController(initialPage: math.max(0, targetIndex));
+    _lastSyncedIndex = targetIndex;
+    _isSyncingPage = false;
+    WidgetsBinding.instance.addPostFrameCallback((_) => oldCtrl.dispose());
+  }
+
+  void _resetContentPageController() {
+    final oldCtrl = _contentPageController;
+    oldCtrl.removeListener(_onContentScroll);
+    _contentPageController = PageController(initialPage: 0)
+      ..addListener(_onContentScroll);
+    _isOnLyricsTab = false;
+    _lyricsPageProgress.value = 0.0;
+    WidgetsBinding.instance.addPostFrameCallback((_) => oldCtrl.dispose());
+  }
+
+  void _scheduleJumpGuard(int targetIndex) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_pageController.hasClients) return;
+      if (targetIndex == store.currentIndex &&
+          targetIndex >= 0 &&
+          targetIndex < store.queue.length) {
+        final currentPage = _pageController.page?.round() ?? -1;
+        if (currentPage != targetIndex) {
+          _isSyncingPage = true;
+          _pageController.jumpToPage(targetIndex);
+          _lastSyncedIndex = targetIndex;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _isSyncingPage = false;
+          });
+        }
+      }
+    });
+  }
+
+  void _onStoreChanged() {
+    if (!mounted) return;
+    if (store.isPlaying) {
+      if (!_lyricTicker.isActive) {
+        _lyricTicker.start();
       }
     } else {
-      if (_breathController.isAnimating) {
-        _breathController.stop();
+      if (_lyricTicker.isActive) {
+        _lyricTicker.stop();
       }
+      _livePosNotifier.value = store.livePositionMs;
     }
 
-    final int targetIndex = _clampedCurrentIndex();
-    if (_pageController.hasClients && targetIndex != _lastSyncedIndex) {
-      _lastSyncedIndex = targetIndex;
-      _isProgrammaticJump = true;
-      _pageController
-          .animateToPage(
-            targetIndex,
-            duration: const Duration(milliseconds: 320),
-            curve: Curves.easeOutCubic,
-          )
-          .whenComplete(() {
-            _isProgrammaticJump = false;
-          });
+    final targetIndex = store.currentIndex;
+    final modeChanged =
+        store.pureMode != _lastPureMode || store.playerStyle != _lastPlayerStyle;
+    final queueBecameNonEmpty = _lastQueueEmpty && store.queue.isNotEmpty;
+    _lastPureMode = store.pureMode;
+    _lastPlayerStyle = store.playerStyle;
+    _lastQueueEmpty = store.queue.isEmpty;
+
+    if (modeChanged || queueBecameNonEmpty) {
+      _recreatePageControllerForIndex(targetIndex);
+      if (modeChanged) {
+        _resetContentPageController();
+      }
+      if (targetIndex >= 0 && targetIndex < store.queue.length) {
+        _scheduleJumpGuard(targetIndex);
+      }
+      return;
+    }
+
+    if (targetIndex != _lastSyncedIndex &&
+        targetIndex >= 0 &&
+        targetIndex < store.queue.length) {
+      if (_pageController.hasClients) {
+        _lastSyncedIndex = targetIndex;
+        final currentPage = _pageController.page?.round() ?? targetIndex;
+        if (currentPage != targetIndex) {
+          _isSyncingPage = true;
+          _pageController
+              .animateToPage(
+                targetIndex,
+                duration: const Duration(milliseconds: 280),
+                curve: Curves.easeOutCubic,
+              )
+              .whenComplete(() {
+                _isSyncingPage = false;
+              });
+        }
+      } else {
+        _recreatePageControllerForIndex(targetIndex);
+      }
     }
   }
 
   void _openFullLyrics() {
     Navigator.of(context).push(
+      PageRouteBuilder<void>(
+        transitionDuration: const Duration(milliseconds: 260),
+        reverseTransitionDuration: const Duration(milliseconds: 220),
+        pageBuilder: (context, animation, secondaryAnimation) =>
+            FullLyricsPage(store: store),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          final curved = CurvedAnimation(
+            parent: animation,
+            curve: Curves.easeOutCubic,
+            reverseCurve: Curves.easeInCubic,
+          );
+          return SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(1.0, 0.0),
+              end: Offset.zero,
+            ).animate(curved),
+            child: child,
+          );
+        },
+      ),
+    );
+  }
+
+  void _onCoverHorizontalDragStart(DragStartDetails details) {
+    _coverDragDx = 0;
+  }
+
+  void _onCoverHorizontalDragUpdate(DragUpdateDetails details) {
+    _coverDragDx += details.delta.dx;
+  }
+
+  void _onCoverHorizontalDragEnd(DragEndDetails details) {
+    final velocity = details.primaryVelocity ?? 0;
+    if (velocity < -220 || _coverDragDx < -56) {
+      _openFullLyrics();
+    }
+    _coverDragDx = 0;
+  }
+
+  void _openIslandSettings() {
+    Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => FullLyricsPage(store: widget.store),
+        builder: (_) => IslandSettingsPage(bridge: store.bridge),
+      ),
+    );
+  }
+
+  void _openDrivePage() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => DrivePage(store: store),
       ),
     );
   }
@@ -116,7 +302,7 @@ class _ImmersivePlayerPageState extends State<ImmersivePlayerPage>
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => ArtistTracksPage(
-          store: widget.store,
+          store: store,
           artistName: track.artist,
           onOpenPlayer: () => Navigator.of(context).pop(),
         ),
@@ -124,1335 +310,2078 @@ class _ImmersivePlayerPageState extends State<ImmersivePlayerPage>
     );
   }
 
-  void _openDrivePage() {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => DrivePage(store: widget.store),
-      ),
-    );
-  }
-
-  void _openIslandSettings() {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => IslandSettingsPage(bridge: widget.store.bridge),
-      ),
-    );
-  }
-
-  bool _isCarScale(BuildContext context) {
-    final CarLayoutMode mode = widget.store.carLayoutMode;
-    if (mode == CarLayoutMode.on) return true;
-    if (mode == CarLayoutMode.off) return false;
-    return MediaQuery.orientationOf(context) == Orientation.landscape;
-  }
-
-  String _formatLyricBadge(LyricFormat format) {
-    switch (format) {
-      case LyricFormat.yrcQrc:
-        return 'YRC/QRC 逐字';
-      case LyricFormat.krc:
-        return 'KRC';
-      case LyricFormat.enhancedLrc:
-        return 'eLRC';
-      case LyricFormat.plainLrc:
-        return 'LRC';
-      case LyricFormat.plainText:
-        return 'TXT';
-    }
-  }
-
   String _formatDuration(int ms) {
-    final int safeMs = math.max(0, ms);
-    final int totalSeconds = safeMs ~/ 1000;
-    final int minutes = totalSeconds ~/ 60;
-    final int seconds = totalSeconds % 60;
-    final String m = minutes.toString().padLeft(2, '0');
-    final String s = seconds.toString().padLeft(2, '0');
-    return '$m:$s';
+    final totalSeconds = math.max(0, ms ~/ 1000);
+    final minutes = totalSeconds ~/ 60;
+    final seconds = totalSeconds % 60;
+    final mStr = minutes.toString().padLeft(2, '0');
+    final sStr = seconds.toString().padLeft(2, '0');
+    return '$mStr:$sStr';
   }
 
-  int _findActiveLineIndex(ParsedLyric lyric, int positionMs) {
-    final List<LyricLine> lines = lyric.lines;
-    if (lines.isEmpty) return -1;
-    int active = 0;
-    for (int i = 0; i < lines.length; i++) {
-      if (lines[i].startMs <= positionMs) {
-        active = i;
+  String? _currentLyricLine(int positionMs) {
+    final lines = store.currentLyrics.lines;
+    if (lines.isEmpty) return null;
+    String? activeText;
+    for (final line in lines) {
+      if (line.startMs <= positionMs) {
+        activeText = line.text;
       } else {
         break;
       }
     }
-    return active;
+    return activeText ?? lines.first.text;
+  }
+
+  ({int activeIndex, List<LyricLine?> lines}) _fiveLineLyricWindow(int positionMs) {
+    final lines = store.currentLyrics.lines;
+    if (lines.isEmpty) {
+      return (activeIndex: -1, lines: const <LyricLine?>[]);
+    }
+    final effectiveMs = positionMs + store.bridge.lyricOffsetMs;
+    int activeIdx = 0;
+    for (int i = 0; i < lines.length; i++) {
+      if (lines[i].startMs <= effectiveMs) {
+        activeIdx = i;
+      } else {
+        break;
+      }
+    }
+    final window = List<LyricLine?>.generate(5, (slot) {
+      final idx = activeIdx + (slot - 2);
+      if (idx < 0 || idx >= lines.length) return null;
+      return lines[idx];
+    });
+    return (activeIndex: activeIdx, lines: window);
   }
 
   @override
   Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: widget.store,
-      builder: (BuildContext context, _) {
-        final AppStore store = widget.store;
-        final Color accent = store.accentColor;
-        final EdgeInsets padding = MediaQuery.paddingOf(context);
-        final bool carScale = _isCarScale(context);
-        final double scale = carScale ? 1.25 : 1.0;
+    return AnimatedBuilder(
+      animation: store,
+      builder: (context, _) {
+        final media = MediaQuery.of(context);
+        final scale = (media.size.width / 390.0).clamp(0.86, 1.12);
+        final track = store.currentTrack;
 
-        return Scaffold(
-          backgroundColor: Colors.transparent,
-          body: StarSkinBackground(
-            accentColor: accent,
-            skin: store.skin,
-            child: Padding(
-              padding: EdgeInsets.only(top: padding.top),
-              child: store.queue.isEmpty
-                  ? _buildEmptyHero(context, store, accent, padding, scale)
-                  : _buildPlayerBody(context, store, accent, padding, scale),
-            ),
+        final bool isPureActive =
+            store.pureMode && store.queue.isNotEmpty && track != null;
+
+        return PopScope(
+          canPop: !_isOnLyricsTab,
+          onPopInvokedWithResult: (didPop, _) {
+            if (!didPop && _isOnLyricsTab) {
+              _animateToCoverTab();
+            }
+          },
+          child: Scaffold(
+            backgroundColor: const Color(0xFF0E1512),
+            body: isPureActive
+                ? _buildPureModeView(context, track, scale)
+                : Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      _buildAtmosphericBackground(track),
+                      SafeArea(
+                        bottom: false,
+                        child: Column(
+                          children: [
+                            _buildTopBar(context),
+                            Expanded(
+                              child: (store.queue.isEmpty || track == null)
+                                  ? _buildEmptyHero(context, scale)
+                                  : _buildPlayerBody(context, track, scale),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
           ),
         );
       },
     );
   }
 
-  Widget _buildEmptyHero(
-    BuildContext context,
-    AppStore store,
-    Color accent,
-    EdgeInsets padding,
-    double scale,
-  ) {
-    return Center(
-      child: SingleChildScrollView(
-        padding: EdgeInsets.fromLTRB(
-          24,
-          24,
-          24,
-          padding.bottom + 96,
-        ),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 440),
-          child: Container(
-            padding: const EdgeInsets.all(28),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.08),
-              borderRadius: BorderRadius.circular(28),
-              border: Border.all(
-                color: Colors.white.withValues(alpha: 0.14),
+  Widget _buildAtmosphericBackground(Track? track) {
+    final accent = store.accentColor;
+    final topTint = Color.lerp(const Color(0xFF18241F), accent, 0.34)!;
+    final midTint = Color.lerp(const Color(0xFF111A16), accent, 0.22)!;
+    const bottomTint = Color(0xFF0A0F0D);
+
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        if (track != null)
+          Opacity(
+            opacity: store.playerStyle == PlayerStyle.immersive ? 0.52 : 0.32,
+            child: ImageFiltered(
+              imageFilter: ImageFilter.blur(sigmaX: 54, sigmaY: 54),
+              child: CoverArtWidget(
+                track: track,
+                localPath: store.coverPathFor(track),
+                accentColor: accent,
+                size: 420,
+                borderRadius: 0,
               ),
-              boxShadow: <BoxShadow>[
-                BoxShadow(
-                  color: accent.withValues(alpha: 0.18),
-                  blurRadius: 36,
-                  spreadRadius: -8,
-                ),
-              ],
             ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                Container(
-                  width: 76 * scale,
-                  height: 76 * scale,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: LinearGradient(
-                      colors: <Color>[
-                        accent.withValues(alpha: 0.88),
-                        accent.withValues(alpha: 0.36),
-                      ],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                    ),
-                  ),
-                  child: Icon(
-                    Icons.music_note_rounded,
-                    size: 38 * scale,
-                    color: Colors.white,
-                  ),
-                ),
-                const SizedBox(height: 20),
-                Text(
-                  'Soda Pulse 沉浸播放',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 22 * scale,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.white,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  '支持逐字歌词、灵动岛实况、车机自适应排版与多款流光皮肤。',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 13.5 * scale,
-                    height: 1.5,
-                    color: Colors.white.withValues(alpha: 0.72),
-                  ),
-                ),
-                const SizedBox(height: 26),
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    onPressed: store.playDemo,
-                    style: FilledButton.styleFrom(
-                      backgroundColor: accent,
-                      foregroundColor: Colors.white,
-                      padding: EdgeInsets.symmetric(
-                        vertical: 14 * scale,
-                        horizontal: 18,
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                    ),
-                    icon: const Icon(Icons.play_circle_fill_rounded),
-                    label: Text(
-                      '一键演示 (ColorOS 17 逐字/灵动岛实测)',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 14 * scale,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: store.rescanLibrary,
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.white,
-                      side: BorderSide(
-                        color: Colors.white.withValues(alpha: 0.28),
-                      ),
-                      padding: EdgeInsets.symmetric(
-                        vertical: 14 * scale,
-                        horizontal: 18,
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                    ),
-                    icon: const Icon(Icons.folder_open_rounded),
-                    label: Text(
-                      '扫描本地音乐',
-                      style: TextStyle(
-                        fontSize: 14 * scale,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ),
+          ),
+        DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                topTint.withValues(alpha: 0.72),
+                midTint.withValues(alpha: 0.84),
+                bottomTint.withValues(alpha: 0.96),
               ],
+              stops: const [0.0, 0.52, 1.0],
             ),
           ),
         ),
+      ],
+    );
+  }
+
+  Widget _buildTopBar(BuildContext context) {
+    final track = store.currentTrack;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 6, 12, 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: ValueListenableBuilder<double>(
+              valueListenable: _lyricsPageProgress,
+              builder: (context, t, _) {
+                final showLyricsHeader =
+                    store.playerStyle == PlayerStyle.free && t > 0.5 && track != null;
+                return AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 220),
+                  layoutBuilder: (currentChild, previousChildren) => Stack(
+                    alignment: Alignment.centerLeft,
+                    children: [
+                      ...previousChildren,
+                      if (currentChild != null) currentChild,
+                    ],
+                  ),
+                  child: showLyricsHeader
+                      ? GestureDetector(
+                          key: const ValueKey<String>('lyrics_header'),
+                          behavior: HitTestBehavior.opaque,
+                          onTap: _animateToCoverTab,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 2),
+                            child: Row(
+                              children: [
+                                const Icon(
+                                  Icons.chevron_left_rounded,
+                                  size: 26,
+                                  color: Colors.white,
+                                ),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        track.title,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          fontSize: 16.5,
+                                          fontWeight: FontWeight.w700,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                      Text(
+                                        track.artist,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          color: Colors.white.withValues(alpha: 0.65),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        )
+                      : GestureDetector(
+                          key: const ValueKey<String>('mode_header'),
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () => showModeSelectSheet(context, store),
+                          child: const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 6, horizontal: 2),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.menu_rounded,
+                                  size: 26,
+                                  color: Colors.white,
+                                ),
+                                SizedBox(width: 14),
+                                Text(
+                                  '模式选择',
+                                  style: TextStyle(
+                                    fontSize: 19,
+                                    fontWeight: FontWeight.w700,
+                                    color: Colors.white,
+                                    letterSpacing: 0.2,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                );
+              },
+            ),
+          ),
+          if (store.carLayoutMode == CarLayoutMode.on ||
+              (store.carLayoutMode == CarLayoutMode.auto &&
+                  MediaQuery.orientationOf(context) == Orientation.landscape))
+            IconButton(
+              tooltip: '车载模式',
+              onPressed: _openDrivePage,
+              icon: const Icon(
+                Icons.directions_car_rounded,
+                size: 24,
+                color: Colors.white,
+              ),
+            ),
+          IconButton(
+            onPressed: widget.onOpenSearch ?? widget.onOpenDiscover,
+            icon: const Icon(
+              Icons.search_rounded,
+              size: 26,
+              color: Colors.white,
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildPlayerBody(
+  Color _pureBackgroundColor() {
+    final hsl = HSLColor.fromColor(store.accentColor);
+    return hsl
+        .withSaturation(hsl.saturation.clamp(0.28, 0.68))
+        .withLightness(hsl.lightness.clamp(0.18, 0.28))
+        .toColor();
+  }
+
+  Widget _buildPureModeView(
     BuildContext context,
-    AppStore store,
-    Color accent,
-    EdgeInsets padding,
+    Track currentTrack,
     double scale,
   ) {
-    final Track? currentTrack = store.currentTrack;
-    final double bottomClearance = padding.bottom + (store.pureMode ? 18 : 88);
+    final media = MediaQuery.of(context);
+    final pureBg = _pureBackgroundColor();
+    final topPad = media.padding.top;
 
-    return Column(
-      children: <Widget>[
-        _buildTopHeader(context, store, accent, scale),
-        Expanded(
-          child: PageView.builder(
-            controller: _pageController,
-            scrollDirection: Axis.vertical,
-            itemCount: store.queue.length,
-            onPageChanged: (int index) {
-              if (_isProgrammaticJump) return;
-              _lastSyncedIndex = index;
-              if (index != store.currentIndex) {
-                store.playTrackFromQueue(index);
-              }
-            },
-            itemBuilder: (BuildContext context, int index) {
-              final Track track = store.queue[index];
-              final bool isCurrent = index == store.currentIndex;
-              return _buildTrackPage(
-                context: context,
-                store: store,
-                track: track,
-                isCurrent: isCurrent,
-                accent: accent,
-                scale: scale,
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        AnimatedContainer(
+          duration: const Duration(milliseconds: 360),
+          color: pureBg,
+        ),
+        PageView.builder(
+          key: const ValueKey<String>('pure_vertical_pager'),
+          controller: _pageController,
+          scrollDirection: Axis.vertical,
+          itemCount: store.queue.length,
+          onPageChanged: (index) {
+            if (_isSyncingPage) return;
+            _lastSyncedIndex = index;
+            if (_isOnLyricsTab) {
+              _isOnLyricsTab = false;
+              _lyricsPageProgress.value = 0.0;
+            }
+            store.playTrackFromQueue(index);
+          },
+          itemBuilder: (context, index) {
+            final track = store.queue[index];
+            return _buildPureModePage(
+              context,
+              track: track,
+              isActive: index == store.currentIndex,
+              pureBg: pureBg,
+              scale: scale,
+            );
+          },
+        ),
+        Positioned(
+          top: topPad + 8,
+          left: 16,
+          right: 16,
+          child: ValueListenableBuilder<double>(
+            valueListenable: _lyricsPageProgress,
+            builder: (context, t, _) {
+              final showLyricsBar = t > 0.5;
+              return Row(
+                children: [
+                  ClipOval(
+                    child: BackdropFilter(
+                      filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+                      child: Material(
+                        color: Colors.black.withValues(alpha: 0.24),
+                        shape: const CircleBorder(),
+                        child: InkWell(
+                          customBorder: const CircleBorder(),
+                          onTap: showLyricsBar
+                              ? _animateToCoverTab
+                              : () => showModeSelectSheet(context, store),
+                          child: SizedBox(
+                            width: 42,
+                            height: 42,
+                            child: Icon(
+                              showLyricsBar
+                                  ? Icons.chevron_left_rounded
+                                  : Icons.menu_rounded,
+                              color: Colors.white,
+                              size: 22,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  if (showLyricsBar) ...[
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: _animateToCoverTab,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              currentTrack.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            Text(
+                              currentTrack.artist,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: Colors.white.withValues(alpha: 0.7),
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
               );
             },
           ),
         ),
-        if (currentTrack != null)
-          Padding(
-            padding: EdgeInsets.fromLTRB(20, 4, 20, bottomClearance),
-            child: store.pureMode
-                ? _buildPureTransport(store, accent, scale)
-                : _buildFullBottomControls(store, currentTrack, accent, scale),
-          )
-        else
-          SizedBox(height: bottomClearance),
       ],
     );
   }
 
-  Widget _buildTopHeader(
-    BuildContext context,
-    AppStore store,
-    Color accent,
-    double scale,
-  ) {
-    if (store.pureMode) {
-      return Padding(
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.end,
-          children: <Widget>[
-            GestureDetector(
-              onTap: () => store.setPureMode(false),
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 7,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                    color: Colors.white.withValues(alpha: 0.2),
-                  ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: <Widget>[
-                    Icon(
-                      Icons.fullscreen_exit_rounded,
-                      size: 16 * scale,
-                      color: Colors.white,
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      '退出纯净',
-                      style: TextStyle(
-                        fontSize: 12.5 * scale,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.white,
+  Widget _buildPureModePage(
+    BuildContext context, {
+    required Track track,
+    required bool isActive,
+    required Color pureBg,
+    required double scale,
+  }) {
+    final media = MediaQuery.of(context);
+    final screenH = media.size.height;
+    final bottomInset = media.padding.bottom;
+    final isFav = store.isFavorite(track.id);
+
+    final Widget coverStage = ValueListenableBuilder<double>(
+      valueListenable: _lyricsPageProgress,
+      builder: (context, t, child) {
+        final double activeT = isActive ? t : 0.0;
+        return Opacity(
+          opacity: (1.0 - activeT * 0.45).clamp(0.0, 1.0),
+          child: Transform.scale(
+            scale: 1.0 - activeT * 0.035,
+            child: child,
+          ),
+        );
+      },
+      child: Column(
+        children: [
+          GestureDetector(
+            onTap: store.togglePlayPause,
+            onLongPress: () => store.setPureMode(false),
+            child: SizedBox(
+              height: screenH * 0.50,
+              width: double.infinity,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  _buildFullBleedCover(track),
+                  DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [
+                          Colors.transparent,
+                          Colors.transparent,
+                          pureBg.withValues(alpha: 0.65),
+                          pureBg,
+                        ],
+                        stops: const [0.0, 0.60, 0.86, 1.0],
                       ),
                     ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 6, 14, 4),
-      child: Row(
-        children: <Widget>[
-          IconButton(
-            tooltip: '驾驶模式',
-            onPressed: _openDrivePage,
-            icon: Icon(
-              Icons.directions_car_rounded,
-              size: 22 * scale,
-              color: Colors.white.withValues(alpha: 0.86),
-            ),
-          ),
-          IconButton(
-            tooltip: '灵动岛设置',
-            onPressed: _openIslandSettings,
-            icon: Icon(
-              Icons.dynamic_feed_rounded,
-              size: 21 * scale,
-              color: Colors.white.withValues(alpha: 0.86),
-            ),
-          ),
-          Expanded(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                Text(
-                  _playerStyleLabel(store.playerStyle),
-                  style: TextStyle(
-                    fontSize: 12 * scale,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0.6,
-                    color: Colors.white.withValues(alpha: 0.78),
                   ),
-                ),
-                Text(
-                  '${_clampedCurrentIndex() + 1} / ${store.queue.length}',
-                  style: TextStyle(
-                    fontSize: 10.5 * scale,
-                    color: Colors.white.withValues(alpha: 0.48),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          IconButton(
-            tooltip: '纯净模式',
-            onPressed: () => store.setPureMode(true),
-            icon: Icon(
-              Icons.spa_outlined,
-              size: 21 * scale,
-              color: Colors.white.withValues(alpha: 0.86),
-            ),
-          ),
-          IconButton(
-            tooltip: '皮肤与排版',
-            onPressed: () => showSkinAndLayoutSheet(context, store),
-            icon: Icon(
-              Icons.palette_outlined,
-              size: 21 * scale,
-              color: accent.withValues(alpha: 0.95),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _playerStyleLabel(PlayerStyle style) {
-    switch (style) {
-      case PlayerStyle.free:
-        return 'FREE 沉浸';
-      case PlayerStyle.immersive:
-        return 'IMMERSIVE 黑胶';
-      case PlayerStyle.recommend:
-        return 'KARAOKE 逐字';
-    }
-  }
-
-  Widget _buildTrackPage({
-    required BuildContext context,
-    required AppStore store,
-    required Track track,
-    required bool isCurrent,
-    required Color accent,
-    required double scale,
-  }) {
-    if (store.pureMode) {
-      return _buildPurePage(store, track, accent, scale);
-    }
-
-    switch (store.playerStyle) {
-      case PlayerStyle.free:
-        return _buildFreeStylePage(store, track, isCurrent, accent, scale);
-      case PlayerStyle.immersive:
-        return _buildImmersiveStylePage(
-          store,
-          track,
-          isCurrent,
-          accent,
-          scale,
-        );
-      case PlayerStyle.recommend:
-        return _buildRecommendStylePage(
-          store,
-          track,
-          isCurrent,
-          accent,
-          scale,
-        );
-    }
-  }
-
-  Widget _buildBreathingCover({
-    required Track track,
-    required AppStore store,
-    required Color accent,
-    required double size,
-    required double borderRadius,
-    VoidCallback? onTap,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedBuilder(
-        animation: _breathController,
-        builder: (BuildContext context, Widget? child) {
-          final double t = Curves.easeInOut.transform(_breathController.value);
-          final double animScale = store.isPlaying ? (0.985 + t * 0.032) : 0.98;
-          return Transform.scale(
-            scale: animScale,
-            child: child,
-          );
-        },
-        child: Container(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(borderRadius),
-            boxShadow: <BoxShadow>[
-              BoxShadow(
-                color: accent.withValues(alpha: 0.28),
-                blurRadius: 30,
-                offset: const Offset(0, 14),
-                spreadRadius: -6,
-              ),
-            ],
-          ),
-          child: CoverArtWidget(
-            track: track,
-            localPath: store.coverPathFor(track),
-            accentColor: accent,
-            size: size,
-            borderRadius: borderRadius,
-            showVinylRing: false,
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildFreeStylePage(
-    AppStore store,
-    Track track,
-    bool isCurrent,
-    Color accent,
-    double scale,
-  ) {
-    return LayoutBuilder(
-      builder: (BuildContext context, BoxConstraints constraints) {
-        final double coverSize = math.min(
-          170 * scale,
-          constraints.maxHeight * 0.34,
-        );
-
-        return SingleChildScrollView(
-          physics: const BouncingScrollPhysics(),
-          padding: const EdgeInsets.symmetric(horizontal: 22),
-          child: ConstrainedBox(
-            constraints: BoxConstraints(minHeight: constraints.maxHeight),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: <Widget>[
-                const SizedBox(height: 6),
-                _buildBreathingCover(
-                  track: track,
-                  store: store,
-                  accent: accent,
-                  size: coverSize,
-                  borderRadius: 22,
-                  onTap: _openFullLyrics,
-                ),
-                const SizedBox(height: 14),
-                _buildFiveLineLyrics(store, isCurrent, accent, scale),
-                const SizedBox(height: 14),
-                _buildTrackMetadata(
-                  store: store,
-                  track: track,
-                  accent: accent,
-                  scale: scale,
-                  centered: true,
-                ),
-                const SizedBox(height: 16),
-                _buildFiveSquareActions(store, track, accent, scale),
-                const SizedBox(height: 8),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildFiveLineLyrics(
-    AppStore store,
-    bool isCurrent,
-    Color accent,
-    double scale,
-  ) {
-    return ValueListenableBuilder<int>(
-      valueListenable: _tickNotifier,
-      builder: (BuildContext context, int tick, Widget? child) {
-        final ParsedLyric lyric = store.currentLyrics;
-        if (!isCurrent || lyric.lines.isEmpty) {
-          return GestureDetector(
-            onTap: _openFullLyrics,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 20),
-              child: Text(
-                '轻触查看全屏逐字歌词',
-                style: TextStyle(
-                  fontSize: 14 * scale,
-                  color: Colors.white.withValues(alpha: 0.55),
-                ),
-              ),
-            ),
-          );
-        }
-
-        final int effectiveMs =
-            store.positionMs + store.bridge.lyricOffsetMs;
-        final int activeIdx = _findActiveLineIndex(lyric, effectiveMs);
-
-        return GestureDetector(
-          onTap: _openFullLyrics,
-          behavior: HitTestBehavior.opaque,
-          child: ShaderMask(
-            shaderCallback: (Rect bounds) {
-              return const LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: <Color>[
-                  Colors.transparent,
-                  Colors.white,
-                  Colors.white,
-                  Colors.transparent,
                 ],
-                stops: <double>[0.0, 0.22, 0.78, 1.0],
-              ).createShader(bounds);
-            },
-            blendMode: BlendMode.dstIn,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: List<Widget>.generate(5, (int slot) {
-                final int offset = slot - 2;
-                final int lineIdx = activeIdx + offset;
-                final bool valid =
-                    lineIdx >= 0 && lineIdx < lyric.lines.length;
-                final String text = valid ? lyric.lines[lineIdx].text : '';
-                final bool isActive = offset == 0;
-                final double alpha = isActive
-                    ? 1.0
-                    : (offset.abs() == 1 ? 0.56 : 0.28);
-
-                return Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 3.5),
-                  child: Text(
-                    text.isEmpty ? ' ' : text,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: (isActive ? 17.5 : 14) * scale,
-                      fontWeight:
-                          isActive ? FontWeight.w700 : FontWeight.w400,
-                      color: Colors.white.withValues(alpha: alpha),
-                      shadows: isActive
-                          ? <Shadow>[
-                              Shadow(
-                                color: accent.withValues(alpha: 0.65),
-                                blurRadius: 14,
-                              ),
-                            ]
-                          : null,
-                    ),
-                  ),
-                );
-              }),
+              ),
             ),
           ),
-        );
-      },
-    );
-  }
-
-  Widget _buildImmersiveStylePage(
-    AppStore store,
-    Track track,
-    bool isCurrent,
-    Color accent,
-    double scale,
-  ) {
-    return LayoutBuilder(
-      builder: (BuildContext context, BoxConstraints constraints) {
-        final double coverSize = math.min(
-          252 * scale,
-          constraints.maxHeight * 0.45,
-        );
-
-        return SingleChildScrollView(
-          physics: const BouncingScrollPhysics(),
-          padding: const EdgeInsets.symmetric(horizontal: 22),
-          child: ConstrainedBox(
-            constraints: BoxConstraints(minHeight: constraints.maxHeight),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: <Widget>[
-                const SizedBox(height: 8),
-                _buildBreathingCover(
-                  track: track,
-                  store: store,
-                  accent: accent,
-                  size: coverSize,
-                  borderRadius: 28,
-                  onTap: _openFullLyrics,
-                ),
-                const SizedBox(height: 18),
-                _buildTrackMetadata(
-                  store: store,
-                  track: track,
-                  accent: accent,
-                  scale: scale,
-                  centered: true,
-                ),
-                const SizedBox(height: 12),
-                _buildTwoLineLyricPreview(store, isCurrent, accent, scale),
-                const SizedBox(height: 16),
-                _buildFiveSquareActions(store, track, accent, scale),
-                const SizedBox(height: 8),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildTwoLineLyricPreview(
-    AppStore store,
-    bool isCurrent,
-    Color accent,
-    double scale,
-  ) {
-    return ValueListenableBuilder<int>(
-      valueListenable: _tickNotifier,
-      builder: (BuildContext context, int tick, Widget? child) {
-        final ParsedLyric lyric = store.currentLyrics;
-        if (!isCurrent || lyric.lines.isEmpty) {
-          return GestureDetector(
-            onTap: _openFullLyrics,
-            child: Text(
-              '点击封面或此处展开歌词',
-              style: TextStyle(
-                fontSize: 13.5 * scale,
-                color: Colors.white.withValues(alpha: 0.52),
-              ),
-            ),
-          );
-        }
-
-        final int effectiveMs =
-            store.positionMs + store.bridge.lyricOffsetMs;
-        final int activeIdx = _findActiveLineIndex(lyric, effectiveMs);
-        final String currentLine = activeIdx >= 0
-            ? lyric.lines[activeIdx].text
-            : '';
-        final String nextLine =
-            (activeIdx + 1 < lyric.lines.length)
-                ? lyric.lines[activeIdx + 1].text
-                : '';
-
-        return GestureDetector(
-          onTap: _openFullLyrics,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              Text(
-                currentLine,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 16 * scale,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.white,
-                  shadows: <Shadow>[
-                    Shadow(
-                      color: accent.withValues(alpha: 0.5),
-                      blurRadius: 12,
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                nextLine,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 13.5 * scale,
-                  color: Colors.white.withValues(alpha: 0.5),
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildRecommendStylePage(
-    AppStore store,
-    Track track,
-    bool isCurrent,
-    Color accent,
-    double scale,
-  ) {
-    final bool isFav = store.isFavorite(track.id);
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: Column(
-        children: <Widget>[
-          const SizedBox(height: 6),
-          Row(
-            children: <Widget>[
-              _buildBreathingCover(
-                track: track,
-                store: store,
-                accent: accent,
-                size: 64 * scale,
-                borderRadius: 14,
-                onTap: _openFullLyrics,
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: _buildTrackMetadata(
-                  store: store,
-                  track: track,
-                  accent: accent,
-                  scale: scale,
-                  centered: false,
-                ),
-              ),
-              IconButton(
-                onPressed: () => store.toggleFavorite(track),
-                icon: Icon(
-                  isFav ? Icons.star_rounded : Icons.star_border_rounded,
-                  size: 28 * scale,
-                  color: isFav
-                      ? accent
-                      : Colors.white.withValues(alpha: 0.78),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Expanded(
-            child: ValueListenableBuilder<int>(
-              valueListenable: _tickNotifier,
-              builder: (BuildContext context, int tick, Widget? child) {
-                return KaraokeLyricView(
-                  lyrics: store.currentLyrics,
-                  positionProvider: () => isCurrent ? store.positionMs : 0,
-                  offsetMs: store.bridge.lyricOffsetMs,
-                  accentColor: accent,
-                  onSeekToMs: store.seekTo,
-                );
-              },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildPurePage(
-    AppStore store,
-    Track track,
-    Color accent,
-    double scale,
-  ) {
-    return LayoutBuilder(
-      builder: (BuildContext context, BoxConstraints constraints) {
-        final double coverSize = math.min(
-          248 * scale,
-          constraints.maxHeight * 0.54,
-        );
-
-        return Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                _buildBreathingCover(
-                  track: track,
-                  store: store,
-                  accent: accent,
-                  size: coverSize,
-                  borderRadius: 28,
-                  onTap: _openFullLyrics,
-                ),
-                const SizedBox(height: 26),
-                _buildTrackMetadata(
-                  store: store,
-                  track: track,
-                  accent: accent,
-                  scale: scale,
-                  centered: true,
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildTrackMetadata({
-    required AppStore store,
-    required Track track,
-    required Color accent,
-    required double scale,
-    required bool centered,
-  }) {
-    final String badge = _formatLyricBadge(store.currentLyrics.format);
-
-    return Column(
-      crossAxisAlignment:
-          centered ? CrossAxisAlignment.center : CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: <Widget>[
-        Row(
-          mainAxisSize: centered ? MainAxisSize.min : MainAxisSize.max,
-          mainAxisAlignment:
-              centered ? MainAxisAlignment.center : MainAxisAlignment.start,
-          children: <Widget>[
-            Flexible(
-              child: Text(
-                track.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 21 * scale,
-                  fontWeight: FontWeight.w700,
-                  color: Colors.white,
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
-              decoration: BoxDecoration(
-                color: accent.withValues(alpha: 0.22),
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(
-                  color: accent.withValues(alpha: 0.45),
-                  width: 0.8,
-                ),
-              ),
-              child: Text(
-                badge,
-                style: TextStyle(
-                  fontSize: 10 * scale,
-                  fontWeight: FontWeight.w700,
-                  color: Colors.white.withValues(alpha: 0.92),
-                ),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 6),
-        GestureDetector(
-          onTap: () => _openArtistTracks(track),
-          child: Container(
-            padding: const EdgeInsets.only(bottom: 1.5),
-            decoration: BoxDecoration(
-              border: Border(
-                bottom: BorderSide(
-                  color: Colors.white.withValues(alpha: 0.36),
-                  width: 1,
-                ),
-              ),
-            ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 20, 0),
             child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                Flexible(
-                  child: Text(
-                    track.artist,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 14 * scale,
-                      color: Colors.white.withValues(alpha: 0.78),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 3),
-                Icon(
-                  Icons.chevron_right_rounded,
-                  size: 16 * scale,
-                  color: Colors.white.withValues(alpha: 0.56),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildFiveSquareActions(
-    AppStore store,
-    Track track,
-    Color accent,
-    double scale,
-  ) {
-    final bool isFav = store.isFavorite(track.id);
-    final double btnHeight = 46 * scale;
-
-    return Row(
-      children: <Widget>[
-        Expanded(
-          child: _buildGlassSquareButton(
-            height: btnHeight,
-            filledColor: isFav ? accent.withValues(alpha: 0.34) : null,
-            borderColor: isFav ? accent.withValues(alpha: 0.72) : null,
-            onTap: () => store.toggleFavorite(track),
-            child: Icon(
-              isFav ? Icons.favorite_rounded : Icons.favorite_border_rounded,
-              size: 21 * scale,
-              color: isFav ? Colors.white : Colors.white.withValues(alpha: 0.86),
-            ),
-          ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: _buildGlassSquareButton(
-            height: btnHeight,
-            onTap: store.shareCurrentTrack,
-            child: Icon(
-              Icons.ios_share_rounded,
-              size: 20 * scale,
-              color: Colors.white.withValues(alpha: 0.86),
-            ),
-          ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: _buildGlassSquareButton(
-            height: btnHeight,
-            onTap: () => showQueueSheet(context, store),
-            child: Icon(
-              Icons.queue_music_rounded,
-              size: 22 * scale,
-              color: Colors.white.withValues(alpha: 0.86),
-            ),
-          ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: _buildGlassSquareButton(
-            height: btnHeight,
-            onTap: () {
-              store.refreshRecommendQueue();
-              ScaffoldMessenger.of(context)
-                ..hideCurrentSnackBar()
-                ..showSnackBar(
-                  const SnackBar(
-                    content: Text('已刷新待播推荐队列'),
-                    duration: Duration(milliseconds: 1400),
-                  ),
-                );
-            },
-            child: Icon(
-              Icons.auto_awesome_rounded,
-              size: 20 * scale,
-              color: Colors.white.withValues(alpha: 0.86),
-            ),
-          ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Container(
-            height: btnHeight,
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.08),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(
-                color: Colors.white.withValues(alpha: 0.14),
-              ),
-            ),
-            child: PopupMenuButton<String>(
-              padding: EdgeInsets.zero,
-              color: const Color(0xFF1D2230),
-              icon: Icon(
-                Icons.more_horiz_rounded,
-                size: 22 * scale,
-                color: Colors.white.withValues(alpha: 0.86),
-              ),
-              onSelected: (String value) {
-                switch (value) {
-                  case 'skin':
-                    showSkinAndLayoutSheet(context, store);
-                  case 'import_lyric':
-                    store.importExternalLyric();
-                  case 'desktop_lyric':
-                    store.toggleDesktopLyric();
-                  case 'drive':
-                    _openDrivePage();
-                  case 'island':
-                    _openIslandSettings();
-                  case 'pure':
-                    store.setPureMode(true);
-                }
-              },
-              itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
-                const PopupMenuItem<String>(
-                  value: 'skin',
-                  child: Text(
-                    '皮肤与播放样式',
-                    style: TextStyle(color: Colors.white),
-                  ),
-                ),
-                const PopupMenuItem<String>(
-                  value: 'import_lyric',
-                  child: Text(
-                    '导入外部歌词',
-                    style: TextStyle(color: Colors.white),
-                  ),
-                ),
-                PopupMenuItem<String>(
-                  value: 'desktop_lyric',
-                  child: Text(
-                    store.desktopLyricEnabled ? '关闭桌面歌词' : '开启桌面歌词',
-                    style: const TextStyle(color: Colors.white),
-                  ),
-                ),
-                const PopupMenuItem<String>(
-                  value: 'drive',
-                  child: Text(
-                    '车机驾驶模式',
-                    style: TextStyle(color: Colors.white),
-                  ),
-                ),
-                const PopupMenuItem<String>(
-                  value: 'island',
-                  child: Text(
-                    '灵动岛实时活动',
-                    style: TextStyle(color: Colors.white),
-                  ),
-                ),
-                const PopupMenuItem<String>(
-                  value: 'pure',
-                  child: Text(
-                    '进入纯净模式',
-                    style: TextStyle(color: Colors.white),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildGlassSquareButton({
-    required double height,
-    required VoidCallback onTap,
-    required Widget child,
-    Color? filledColor,
-    Color? borderColor,
-  }) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(14),
-        child: Ink(
-          height: height,
-          decoration: BoxDecoration(
-            color: filledColor ?? Colors.white.withValues(alpha: 0.08),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-              color: borderColor ?? Colors.white.withValues(alpha: 0.14),
-            ),
-          ),
-          child: Center(child: child),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildPureTransport(AppStore store, Color accent, double scale) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: <Widget>[
-        IconButton(
-          onPressed: store.playPrevious,
-          iconSize: 34 * scale,
-          color: Colors.white,
-          icon: const Icon(Icons.skip_previous_rounded),
-        ),
-        const SizedBox(width: 24),
-        _buildPlayPauseCircle(store, accent, scale),
-        const SizedBox(width: 24),
-        IconButton(
-          onPressed: store.playNext,
-          iconSize: 34 * scale,
-          color: Colors.white,
-          icon: const Icon(Icons.skip_next_rounded),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildFullBottomControls(
-    AppStore store,
-    Track track,
-    Color accent,
-    double scale,
-  ) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: <Widget>[
-        ValueListenableBuilder<int>(
-          valueListenable: _tickNotifier,
-          builder: (BuildContext context, int tick, Widget? child) {
-            final int durationMs = math.max(1, track.durationMs);
-            final double currentMs = (_dragValueMs ??
-                    store.positionMs.toDouble())
-                .clamp(0, durationMs.toDouble());
-
-            return Column(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                SliderTheme(
-                  data: SliderTheme.of(context).copyWith(
-                    trackHeight: 3.5 * scale,
-                    thumbShape: RoundSliderThumbShape(
-                      enabledThumbRadius: 6 * scale,
-                    ),
-                    overlayShape: RoundSliderOverlayShape(
-                      overlayRadius: 14 * scale,
-                    ),
-                    activeTrackColor: accent,
-                    inactiveTrackColor: Colors.white.withValues(alpha: 0.18),
-                    thumbColor: Colors.white,
-                    overlayColor: accent.withValues(alpha: 0.24),
-                  ),
-                  child: Slider(
-                    min: 0,
-                    max: durationMs.toDouble(),
-                    value: currentMs,
-                    onChanged: (double value) {
-                      setState(() {
-                        _dragValueMs = value;
-                      });
-                    },
-                    onChangeEnd: (double value) {
-                      setState(() {
-                        _dragValueMs = null;
-                      });
-                      store.seekTo(value.round());
-                    },
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 6),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: <Widget>[
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
                       Text(
-                        _formatDuration(currentMs.round()),
+                        track.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          fontSize: 11.5 * scale,
-                          color: Colors.white.withValues(alpha: 0.62),
+                          fontSize: 21 * scale,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.white,
+                          height: 1.2,
                         ),
                       ),
-                      Text(
-                        _formatDuration(durationMs),
-                        style: TextStyle(
-                          fontSize: 11.5 * scale,
-                          color: Colors.white.withValues(alpha: 0.62),
+                      const SizedBox(height: 4),
+                      GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => _openArtistTracks(track),
+                        child: Text(
+                          track.artist,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 14.5 * scale,
+                            fontWeight: FontWeight.w500,
+                            color: Colors.white.withValues(alpha: 0.78),
+                          ),
                         ),
                       ),
                     ],
                   ),
                 ),
+                const SizedBox(width: 10),
+                _buildPureCircleButton(
+                  icon: isFav ? Icons.star_rounded : Icons.star_border_rounded,
+                  onTap: () => store.toggleFavorite(track),
+                ),
+                const SizedBox(width: 10),
+                _buildPureCircleButton(
+                  icon: Icons.more_vert_rounded,
+                  onTap: () => showMoreRoamSheet(
+                    context,
+                    store,
+                    onOpenLyrics: _animateToLyricsTab,
+                    onOpenIsland: _openIslandSettings,
+                  ),
+                ),
               ],
-            );
-          },
+            ),
+          ),
+          Expanded(
+            child: Center(
+              child: _buildPureThreeLineLyrics(
+                context,
+                isActive: isActive,
+                scale: scale,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    final Widget inlineLyricsStage = ValueListenableBuilder<double>(
+      valueListenable: _lyricsPageProgress,
+      builder: (context, t, child) {
+        return Opacity(
+          opacity: (0.2 + t * 0.8).clamp(0.0, 1.0),
+          child: child,
+        );
+      },
+      child: Column(
+        children: [
+          SizedBox(height: media.padding.top + 56),
+          Expanded(
+            child: KaraokeLyricView(
+              lyrics: store.currentLyrics,
+              positionProvider: () => store.livePositionMs,
+              offsetMs: store.bridge.lyricOffsetMs,
+              accentColor: store.accentColor,
+              onSeekToMs: store.seekTo,
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 2, 24, 6),
+            child: Row(
+              children: [
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: store.importExternalLyric,
+                  child: Text(
+                    store.lyricSourceLabel.isNotEmpty
+                        ? '词 ${store.lyricSourceLabel}'
+                        : '导入歌词',
+                    style: TextStyle(
+                      fontSize: 12 * scale,
+                      fontWeight: FontWeight.w500,
+                      color: Colors.white.withValues(alpha: 0.55),
+                      letterSpacing: 0.4,
+                    ),
+                  ),
+                ),
+                const Spacer(),
+                _buildCapsuleButton(
+                  label: '调轴/全屏',
+                  onTap: _openFullLyrics,
+                ),
+                const SizedBox(width: 8),
+                _buildCapsuleButton(
+                  label: '封面',
+                  onTap: _animateToCoverTab,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+
+    return Column(
+      children: [
+        Expanded(
+          child: isActive
+              ? PageView(
+                  controller: _contentPageController,
+                  scrollDirection: Axis.horizontal,
+                  physics: const BouncingScrollPhysics(),
+                  onPageChanged: (page) {
+                    setState(() {
+                      _isOnLyricsTab = page == 1;
+                    });
+                  },
+                  children: [
+                    coverStage,
+                    inlineLyricsStage,
+                  ],
+                )
+              : coverStage,
         ),
-        const SizedBox(height: 6),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: <Widget>[
-            IconButton(
-              tooltip: '切换播放模式',
-              onPressed: store.cyclePlayMode,
-              iconSize: 23 * scale,
-              color: Colors.white.withValues(alpha: 0.85),
-              icon: Icon(_playModeIcon(store.playMode)),
-            ),
-            IconButton(
-              onPressed: store.playPrevious,
-              iconSize: 34 * scale,
-              color: Colors.white,
-              icon: const Icon(Icons.skip_previous_rounded),
-            ),
-            _buildPlayPauseCircle(store, accent, scale),
-            IconButton(
-              onPressed: store.playNext,
-              iconSize: 34 * scale,
-              color: Colors.white,
-              icon: const Icon(Icons.skip_next_rounded),
-            ),
-            IconButton(
-              tooltip: '全屏歌词',
-              onPressed: _openFullLyrics,
-              iconSize: 23 * scale,
-              color: Colors.white.withValues(alpha: 0.85),
-              icon: const Icon(Icons.lyrics_outlined),
-            ),
-          ],
+        _buildPureLowerProgressAndTransport(
+          context,
+          track,
+          isActive: isActive,
+          scale: scale,
+          bottomInset: bottomInset,
         ),
       ],
     );
   }
 
-  IconData _playModeIcon(PlayMode mode) {
-    switch (mode) {
-      case PlayMode.sequence:
-        return Icons.repeat_rounded;
-      case PlayMode.single:
-        return Icons.repeat_one_rounded;
-      case PlayMode.shuffle:
-        return Icons.shuffle_rounded;
-      case PlayMode.smart:
-        return Icons.auto_awesome_motion_rounded;
-    }
-  }
-
-  Widget _buildPlayPauseCircle(AppStore store, Color accent, double scale) {
-    final double circleSize = 60 * scale;
-
-    return GestureDetector(
-      onTap: store.togglePlayPause,
-      child: Container(
-        width: circleSize,
-        height: circleSize,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          gradient: LinearGradient(
-            colors: <Color>[
-              accent,
-              accent.withValues(alpha: 0.78),
-            ],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-          boxShadow: <BoxShadow>[
-            BoxShadow(
-              color: accent.withValues(alpha: 0.42),
-              blurRadius: 20,
-              offset: const Offset(0, 6),
-            ),
+  Widget _buildFullBleedCover(Track track) {
+    final localPath = store.coverPathFor(track);
+    final uri = track.albumArtUri;
+    final fallback = Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            store.accentColor.withValues(alpha: 0.72),
+            const Color(0xFF141B22),
           ],
         ),
+      ),
+      child: Center(
         child: Icon(
-          store.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
-          size: 34 * scale,
-          color: Colors.white,
+          Icons.music_note_rounded,
+          size: 88,
+          color: Colors.white.withValues(alpha: 0.45),
+        ),
+      ),
+    );
+
+    if (localPath != null && localPath.isNotEmpty && File(localPath).existsSync()) {
+      return Image.file(
+        File(localPath),
+        fit: BoxFit.cover,
+        errorBuilder: (context, error, stackTrace) => fallback,
+      );
+    }
+    if (uri != null && uri.startsWith('http')) {
+      return Image.network(
+        uri,
+        fit: BoxFit.cover,
+        errorBuilder: (context, error, stackTrace) => fallback,
+      );
+    }
+    return fallback;
+  }
+
+  Widget _buildPureCircleButton({
+    required IconData icon,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: Colors.white.withValues(alpha: 0.14),
+      shape: const CircleBorder(),
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        child: SizedBox(
+          width: 42,
+          height: 42,
+          child: Icon(
+            icon,
+            color: Colors.white,
+            size: 21,
+          ),
         ),
       ),
     );
   }
+
+  Widget _buildPureThreeLineLyrics(
+    BuildContext context, {
+    required bool isActive,
+    required double scale,
+  }) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: _animateToLyricsTab,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 4),
+        child: SizedBox(
+          width: double.infinity,
+          child: ValueListenableBuilder<int>(
+            valueListenable: _livePosNotifier,
+            builder: (context, livePos, _) {
+              final effectivePos = livePos + store.bridge.lyricOffsetMs;
+              final five = isActive
+                  ? _fiveLineLyricWindow(livePos)
+                  : (activeIndex: -1, lines: const <LyricLine?>[]);
+              final hasLyrics = five.activeIndex >= 0 && five.lines.isNotEmpty;
+
+              if (!hasLyrics) {
+                return Text(
+                  '暂无歌词 · 左滑或轻触查看歌词',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 13.5 * scale,
+                    color: Colors.white.withValues(alpha: 0.48),
+                  ),
+                );
+              }
+
+              final three = <LyricLine?>[
+                five.lines[1],
+                five.lines[2],
+                five.lines[3],
+              ];
+
+              return AnimatedSwitcher(
+                duration: const Duration(milliseconds: 220),
+                switchInCurve: Curves.easeOut,
+                switchOutCurve: Curves.easeIn,
+                layoutBuilder: (currentChild, previousChildren) => Stack(
+                  alignment: Alignment.centerLeft,
+                  children: <Widget>[
+                    ...previousChildren,
+                    if (currentChild != null) currentChild,
+                  ],
+                ),
+                child: SizedBox(
+                  key: ValueKey<int>(five.activeIndex),
+                  width: double.infinity,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: List<Widget>.generate(3, (slot) {
+                      final lineObj = three[slot];
+                      final lineText = lineObj?.text.trim() ?? '';
+                      if (lineObj == null || lineText.isEmpty) {
+                        return const SizedBox(height: 2);
+                      }
+                      if (slot == 1) {
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 3.0),
+                          child: KaraokeSingleLineSweep(
+                            line: lineObj,
+                            positionMs: effectivePos,
+                            style: TextStyle(
+                              fontSize: 17.5 * scale,
+                              fontWeight: FontWeight.w700,
+                              height: 1.30,
+                            ),
+                            activeColor: Colors.white,
+                            inactiveColor: Colors.white.withValues(alpha: 0.44),
+                            glowColor: store.accentColor.withValues(alpha: 0.45),
+                          ),
+                        );
+                      }
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2.0),
+                        child: Text(
+                          lineText,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 13.5 * scale,
+                            fontWeight: FontWeight.w400,
+                            color: Colors.white.withValues(alpha: 0.52),
+                            height: 1.24,
+                          ),
+                        ),
+                      );
+                    }),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPureLowerProgressAndTransport(
+    BuildContext context,
+    Track track, {
+    required bool isActive,
+    required double scale,
+    required double bottomInset,
+  }) {
+    final durationMs = math.max(1, track.durationMs);
+    final rawPos = isActive
+        ? (_isDraggingSlider ? _dragPositionMs.round() : store.positionMs)
+        : 0;
+    final clampedPos = rawPos.clamp(0, durationMs);
+    final remainingMs = math.max(0, durationMs - clampedPos);
+
+    return Padding(
+      padding: EdgeInsets.fromLTRB(24, 4, 24, bottomInset + 22),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox(
+            height: 24 * scale,
+            child: SliderTheme(
+              data: SliderTheme.of(context).copyWith(
+                trackHeight: 2.5,
+                activeTrackColor: Colors.white,
+                inactiveTrackColor: Colors.white.withValues(alpha: 0.28),
+                thumbColor: Colors.white,
+                overlayColor: Colors.white.withValues(alpha: 0.16),
+                thumbShape: const RoundSliderThumbShape(
+                  enabledThumbRadius: 6,
+                  elevation: 0,
+                  pressedElevation: 2,
+                ),
+                overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+                trackShape: const _FullWidthTrackShape(),
+              ),
+              child: Slider(
+                min: 0,
+                max: durationMs.toDouble(),
+                value: clampedPos.toDouble(),
+                onChangeStart: (v) {
+                  setState(() {
+                    _isDraggingSlider = true;
+                    _dragPositionMs = v;
+                  });
+                },
+                onChanged: (v) {
+                  setState(() {
+                    _dragPositionMs = v;
+                  });
+                },
+                onChangeEnd: (v) {
+                  setState(() {
+                    _isDraggingSlider = false;
+                  });
+                  store.seekTo(v.round());
+                },
+              ),
+            ),
+          ),
+          Row(
+            children: [
+              Text(
+                _formatDuration(clampedPos),
+                style: TextStyle(
+                  fontSize: 12 * scale,
+                  color: Colors.white.withValues(alpha: 0.74),
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
+              const Spacer(),
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => showSoundEffectSheet(context, store),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  child: Text(
+                    '高品质',
+                    style: TextStyle(
+                      fontSize: 12.5 * scale,
+                      fontWeight: FontWeight.w500,
+                      color: Colors.white.withValues(alpha: 0.82),
+                    ),
+                  ),
+                ),
+              ),
+              const Spacer(),
+              Text(
+                '-${_formatDuration(remainingMs)}',
+                style: TextStyle(
+                  fontSize: 12 * scale,
+                  color: Colors.white.withValues(alpha: 0.74),
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: 16 * scale),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                IconButton(
+                  onPressed: store.playPrevious,
+                  icon: Icon(
+                    Icons.skip_previous_rounded,
+                    size: 38 * scale,
+                    color: Colors.white,
+                  ),
+                ),
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: store.togglePlayPause,
+                  child: Padding(
+                    padding: const EdgeInsets.all(6),
+                    child: Icon(
+                      store.isPlaying
+                          ? Icons.pause_rounded
+                          : Icons.play_arrow_rounded,
+                      size: 52 * scale,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  onPressed: store.playNext,
+                  icon: Icon(
+                    Icons.skip_next_rounded,
+                    size: 38 * scale,
+                    color: Colors.white,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptyHero(BuildContext context, double scale) {
+    final bottomPad = MediaQuery.of(context).padding.bottom;
+    return Column(
+      children: [
+        Expanded(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 28),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.16),
+                  ),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 74,
+                      height: 74,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: store.accentColor.withValues(alpha: 0.22),
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.24),
+                        ),
+                      ),
+                      child: const Icon(
+                        Icons.music_note_rounded,
+                        size: 36,
+                        color: Colors.white,
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    Text(
+                      '暂无正在播放的歌曲',
+                      style: TextStyle(
+                        fontSize: 18 * scale,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '可立即播放示例曲目，或扫描本地音乐库开启畅听',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 13.5 * scale,
+                        color: Colors.white.withValues(alpha: 0.7),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: FilledButton.icon(
+                            onPressed: store.playDemo,
+                            style: FilledButton.styleFrom(
+                              backgroundColor: Colors.white,
+                              foregroundColor: const Color(0xFF101814),
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                            ),
+                            icon: const Icon(Icons.play_arrow_rounded, size: 20),
+                            label: const Text(
+                              '播放示例',
+                              style: TextStyle(fontWeight: FontWeight.w700),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: store.rescanLibrary,
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.white,
+                              side: BorderSide(
+                                color: Colors.white.withValues(alpha: 0.35),
+                              ),
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                            ),
+                            icon: const Icon(Icons.refresh_rounded, size: 18),
+                            label: const Text(
+                              '扫描曲库',
+                              style: TextStyle(fontWeight: FontWeight.w600),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        if (store.bottomBarStyle == BottomBarStyle.native && !store.pureMode)
+          Padding(
+            padding: EdgeInsets.only(bottom: bottomPad),
+            child: _buildNativeBottomRow(scale),
+          )
+        else
+          SizedBox(height: bottomPad + 76),
+      ],
+    );
+  }
+
+  Widget _buildPlayerBody(BuildContext context, Track currentTrack, double scale) {
+    final style = store.playerStyle;
+    if (style == PlayerStyle.immersive) {
+      return _buildImmersiveStyleBody(context, currentTrack, scale);
+    }
+    if (style == PlayerStyle.recommend) {
+      return _buildRecommendStyleBody(context, currentTrack, scale);
+    }
+    return _buildFreeModeBody(context, scale);
+  }
+
+  Widget _buildFreeModeBody(BuildContext context, double scale) {
+    return PageView.builder(
+      key: const ValueKey<String>('free_vertical_pager'),
+      controller: _pageController,
+      scrollDirection: Axis.vertical,
+      itemCount: store.queue.length,
+      onPageChanged: (index) {
+        if (_isSyncingPage) return;
+        _lastSyncedIndex = index;
+        if (_isOnLyricsTab) {
+          _isOnLyricsTab = false;
+          _lyricsPageProgress.value = 0.0;
+        }
+        store.playTrackFromQueue(index);
+      },
+      itemBuilder: (context, index) {
+        final track = store.queue[index];
+        return _buildFreeModePage(context, track, index == store.currentIndex, scale);
+      },
+    );
+  }
+
+  Widget _buildFreeModePage(
+    BuildContext context,
+    Track track,
+    bool isActive,
+    double scale,
+  ) {
+    final bottomInset = MediaQuery.of(context).padding.bottom;
+    final isGlassBar = store.bottomBarStyle == BottomBarStyle.glass;
+
+    final Widget coverStage = LayoutBuilder(
+      builder: (context, constraints) {
+        final hasLyrics = isActive && store.currentLyrics.lines.isNotEmpty;
+        final maxCoverW = (constraints.maxWidth - 50).clamp(160.0, 360.0);
+        final reservedBelow = (hasLyrics ? 236.0 : 148.0) * scale;
+        final coverSize = math
+            .min(maxCoverW, constraints.maxHeight - reservedBelow)
+            .clamp(150.0, maxCoverW);
+
+        return ValueListenableBuilder<double>(
+          valueListenable: _lyricsPageProgress,
+          builder: (context, t, child) {
+            final double activeT = isActive ? t : 0.0;
+            return Opacity(
+              opacity: (1.0 - activeT * 0.45).clamp(0.0, 1.0),
+              child: Transform.scale(
+                scale: 1.0 - activeT * 0.035,
+                child: child,
+              ),
+            );
+          },
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.start,
+            children: [
+              SizedBox(height: (hasLyrics ? 10 : 28) * scale),
+              GestureDetector(
+                onTap: store.togglePlayPause,
+                onLongPress: () => store.setPureMode(!store.pureMode),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 240),
+                  curve: Curves.easeOutCubic,
+                  width: coverSize,
+                  height: coverSize,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(24),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.36),
+                        blurRadius: 28,
+                        offset: const Offset(0, 14),
+                      ),
+                    ],
+                  ),
+                  child: CoverArtWidget(
+                    track: track,
+                    localPath: store.coverPathFor(track),
+                    accentColor: store.accentColor,
+                    size: coverSize,
+                    borderRadius: 24,
+                  ),
+                ),
+              ),
+              SizedBox(height: (hasLyrics ? 16 : 14) * scale),
+              _buildExposedLyricsPreview(
+                context,
+                isActive: isActive,
+                scale: scale,
+              ),
+              const Spacer(),
+              _buildMetadataBlock(context, track, scale),
+              SizedBox(height: 12 * scale),
+              _buildFiveActionButtons(context, track, scale),
+              SizedBox(height: 6 * scale),
+            ],
+          ),
+        );
+      },
+    );
+
+    final Widget inlineLyricsStage = ValueListenableBuilder<double>(
+      valueListenable: _lyricsPageProgress,
+      builder: (context, t, child) {
+        return Opacity(
+          opacity: (0.2 + t * 0.8).clamp(0.0, 1.0),
+          child: child,
+        );
+      },
+      child: Column(
+        children: [
+          Expanded(
+            child: KaraokeLyricView(
+              lyrics: store.currentLyrics,
+              positionProvider: () => store.livePositionMs,
+              offsetMs: store.bridge.lyricOffsetMs,
+              accentColor: store.accentColor,
+              onSeekToMs: store.seekTo,
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 2, 24, 6),
+            child: Row(
+              children: [
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: store.importExternalLyric,
+                  child: Text(
+                    store.lyricSourceLabel.isNotEmpty
+                        ? '词 ${store.lyricSourceLabel}'
+                        : '导入歌词',
+                    style: TextStyle(
+                      fontSize: 12 * scale,
+                      fontWeight: FontWeight.w500,
+                      color: Colors.white.withValues(alpha: 0.52),
+                      letterSpacing: 0.4,
+                    ),
+                  ),
+                ),
+                const Spacer(),
+                _buildCapsuleButton(
+                  label: '调轴/全屏',
+                  onTap: _openFullLyrics,
+                ),
+                const SizedBox(width: 8),
+                _buildCapsuleButton(
+                  label: '封面',
+                  onTap: _animateToCoverTab,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+
+    return Column(
+      children: [
+        Expanded(
+          child: isActive
+              ? PageView(
+                  controller: _contentPageController,
+                  scrollDirection: Axis.horizontal,
+                  physics: const BouncingScrollPhysics(),
+                  onPageChanged: (page) {
+                    setState(() {
+                      _isOnLyricsTab = page == 1;
+                    });
+                  },
+                  children: [
+                    coverStage,
+                    inlineLyricsStage,
+                  ],
+                )
+              : coverStage,
+        ),
+        _buildBottomRegion(
+          context,
+          track,
+          isActive: isActive,
+          scale: scale,
+          bottomInset: bottomInset,
+          isGlassBar: isGlassBar,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildExposedLyricsPreview(
+    BuildContext context, {
+    required bool isActive,
+    required double scale,
+  }) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: _animateToLyricsTab,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 25, vertical: 0),
+        child: SizedBox(
+          width: double.infinity,
+          child: ValueListenableBuilder<int>(
+            valueListenable: _livePosNotifier,
+            builder: (context, livePos, _) {
+              final effectivePos = livePos + store.bridge.lyricOffsetMs;
+              final window = isActive
+                  ? _fiveLineLyricWindow(livePos)
+                  : (activeIndex: -1, lines: const <LyricLine?>[]);
+              final hasLyrics = window.activeIndex >= 0 && window.lines.isNotEmpty;
+
+              if (!hasLyrics) {
+                return Text(
+                  '暂无歌词 · 左滑封面或轻触查看歌词',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 13.5 * scale,
+                    color: Colors.white.withValues(alpha: 0.48),
+                  ),
+                );
+              }
+
+              return AnimatedSwitcher(
+                duration: const Duration(milliseconds: 220),
+                switchInCurve: Curves.easeOut,
+                switchOutCurve: Curves.easeIn,
+                layoutBuilder: (currentChild, previousChildren) => Stack(
+                  alignment: Alignment.centerLeft,
+                  children: <Widget>[
+                    ...previousChildren,
+                    if (currentChild != null) currentChild,
+                  ],
+                ),
+                child: SizedBox(
+                  key: ValueKey<int>(window.activeIndex),
+                  width: double.infinity,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: List<Widget>.generate(5, (slot) {
+                      final lineObj = window.lines[slot];
+                      final lineText = lineObj?.text.trim() ?? '';
+                      if (lineObj == null || lineText.isEmpty) {
+                        return const SizedBox(height: 2);
+                      }
+                      final bool isCenter = slot == 2;
+                      final bool isNear = slot == 1 || slot == 3;
+                      if (isCenter) {
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 2.2),
+                          child: KaraokeSingleLineSweep(
+                            line: lineObj,
+                            positionMs: effectivePos,
+                            style: TextStyle(
+                              fontSize: 17.5 * scale,
+                              fontWeight: FontWeight.w700,
+                              height: 1.28,
+                            ),
+                            activeColor: Colors.white,
+                            inactiveColor: Colors.white.withValues(alpha: 0.44),
+                            glowColor: store.accentColor.withValues(alpha: 0.45),
+                          ),
+                        );
+                      }
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 1.4),
+                        child: Text(
+                          lineText,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 13.5 * scale,
+                            fontWeight: FontWeight.w400,
+                            color: Colors.white.withValues(
+                              alpha: isNear ? 0.56 : 0.44,
+                            ),
+                            height: 1.24,
+                          ),
+                        ),
+                      );
+                    }),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMetadataBlock(BuildContext context, Track track, double scale) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 22),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Expanded(
+                child: Text(
+                  track.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 18 * scale,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white,
+                    height: 1.2,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              _buildCapsuleButton(
+                label: '高品质',
+                onTap: () => showSoundEffectSheet(context, store),
+              ),
+              const SizedBox(width: 6),
+              _buildCapsuleButton(
+                label: '原声',
+                onTap: _animateToLyricsTab,
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => _openArtistTracks(track),
+                child: CustomPaint(
+                  painter: _DottedUnderlinePainter(
+                    color: Colors.white.withValues(alpha: 0.65),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.only(bottom: 3),
+                    child: Text(
+                      track.artist,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 15.5 * scale,
+                        fontWeight: FontWeight.w500,
+                        color: Colors.white.withValues(alpha: 0.92),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              Text(
+                '  |  ',
+                style: TextStyle(
+                  fontSize: 14 * scale,
+                  color: Colors.white.withValues(alpha: 0.45),
+                ),
+              ),
+              Flexible(
+                child: Text(
+                  track.album,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 15 * scale,
+                    color: Colors.white.withValues(alpha: 0.68),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCapsuleButton({
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.14),
+          borderRadius: BorderRadius.circular(7),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.28),
+            width: 0.9,
+          ),
+        ),
+        child: Text(
+          label,
+          style: const TextStyle(
+            fontSize: 11.5,
+            fontWeight: FontWeight.w500,
+            color: Colors.white,
+            height: 1.15,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFiveActionButtons(
+    BuildContext context,
+    Track track,
+    double scale,
+  ) {
+    final isFav = store.isFavorite(track.id);
+    final btnHeight = 52 * scale;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 22),
+      child: Row(
+        children: [
+          Expanded(
+            child: _GlassActionSquare(
+              height: btnHeight,
+              onTap: () => store.toggleFavorite(track),
+              child: Icon(
+                isFav ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                size: 24 * scale,
+                color: isFav ? const Color(0xFFFF5A7E) : Colors.white,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: _GlassActionSquare(
+              height: btnHeight,
+              onTap: store.shareCurrentTrack,
+              child: Icon(
+                Icons.ios_share_rounded,
+                size: 22 * scale,
+                color: Colors.white,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: _GlassActionSquare(
+              height: btnHeight,
+              onTap: () => showQueueSheet(context, store),
+              child: Stack(
+                clipBehavior: Clip.none,
+                alignment: Alignment.center,
+                children: [
+                  Icon(
+                    Icons.queue_music_rounded,
+                    size: 24 * scale,
+                    color: Colors.white,
+                  ),
+                  Positioned(
+                    top: -7,
+                    right: -11,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 5,
+                        vertical: 1.5,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF3A463E).withValues(alpha: 0.92),
+                        borderRadius: BorderRadius.circular(9),
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.45),
+                          width: 0.8,
+                        ),
+                      ),
+                      child: Text(
+                        '${store.queue.length}',
+                        style: const TextStyle(
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white,
+                          height: 1.05,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: _GlassActionSquare(
+              height: btnHeight,
+              onTap: () {
+                store.refreshRecommendQueue();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('已为你刷新智能漫游推荐队列'),
+                    behavior: SnackBarBehavior.floating,
+                    duration: Duration(seconds: 2),
+                  ),
+                );
+              },
+              child: Icon(
+                Icons.auto_awesome_rounded,
+                size: 22 * scale,
+                color: Colors.white,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: _GlassActionSquare(
+              height: btnHeight,
+              onTap: () => showMoreRoamSheet(
+                context,
+                store,
+                onOpenLyrics: _openFullLyrics,
+                onOpenIsland: _openIslandSettings,
+              ),
+              child: Icon(
+                Icons.more_horiz_rounded,
+                size: 24 * scale,
+                color: Colors.white,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBottomRegion(
+    BuildContext context,
+    Track track, {
+    required bool isActive,
+    required double scale,
+    required double bottomInset,
+    required bool isGlassBar,
+  }) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: bottomInset),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _buildInlineProgressBar(track, isActive: isActive, scale: scale),
+          if (store.bottomBarStyle == BottomBarStyle.native && !store.pureMode)
+            _buildNativeBottomRow(scale)
+          else if (isGlassBar && !store.pureMode)
+            const SizedBox(height: 76)
+          else
+            const SizedBox(height: 14),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInlineProgressBar(
+    Track track, {
+    required bool isActive,
+    required double scale,
+  }) {
+    final durationMs = math.max(1, track.durationMs);
+    final rawPos = isActive
+        ? (_isDraggingSlider ? _dragPositionMs.round() : store.positionMs)
+        : 0;
+    final clampedPos = rawPos.clamp(0, durationMs);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 22),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 40 * scale,
+            child: Text(
+              _formatDuration(clampedPos),
+              style: TextStyle(
+                fontSize: 12.5 * scale,
+                color: Colors.white.withValues(alpha: 0.75),
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+          ),
+          Expanded(
+            child: SizedBox(
+              height: 28 * scale,
+              child: SliderTheme(
+                data: SliderTheme.of(context).copyWith(
+                  trackHeight: 2.5,
+                  activeTrackColor: Colors.white,
+                  inactiveTrackColor: Colors.white.withValues(alpha: 0.26),
+                  thumbColor: Colors.white,
+                  overlayColor: Colors.white.withValues(alpha: 0.16),
+                  thumbShape: const RoundSliderThumbShape(
+                    enabledThumbRadius: 6,
+                    elevation: 0,
+                    pressedElevation: 2,
+                  ),
+                  overlayShape: const RoundSliderOverlayShape(overlayRadius: 13),
+                  trackShape: const _FullWidthTrackShape(),
+                ),
+                child: Slider(
+                  min: 0,
+                  max: durationMs.toDouble(),
+                  value: clampedPos.toDouble(),
+                  onChangeStart: (v) {
+                    setState(() {
+                      _isDraggingSlider = true;
+                      _dragPositionMs = v;
+                    });
+                  },
+                  onChanged: (v) {
+                    setState(() {
+                      _dragPositionMs = v;
+                    });
+                  },
+                  onChangeEnd: (v) {
+                    setState(() {
+                      _isDraggingSlider = false;
+                    });
+                    store.seekTo(v.round());
+                  },
+                ),
+              ),
+            ),
+          ),
+          SizedBox(
+            width: 40 * scale,
+            child: Text(
+              _formatDuration(durationMs),
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                fontSize: 12.5 * scale,
+                color: Colors.white.withValues(alpha: 0.75),
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNativeBottomRow(double scale) {
+    final playButtonSize = 54 * scale;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(28, 6, 28, 10),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: widget.onOpenDiscover,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+              child: Text(
+                '发现',
+                style: TextStyle(
+                  fontSize: 17 * scale,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.white.withValues(alpha: 0.92),
+                ),
+              ),
+            ),
+          ),
+          GestureDetector(
+            onTap: store.togglePlayPause,
+            child: Container(
+              width: playButtonSize,
+              height: playButtonSize,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.transparent,
+                border: Border.all(
+                  color: Colors.white.withValues(alpha: 0.9),
+                  width: 1.6,
+                ),
+              ),
+              child: Center(
+                child: Icon(
+                  store.isPlaying
+                      ? Icons.pause_rounded
+                      : Icons.play_arrow_rounded,
+                  size: 28 * scale,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+          ),
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: widget.onOpenMine,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+              child: Text(
+                '我的',
+                style: TextStyle(
+                  fontSize: 17 * scale,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.white.withValues(alpha: 0.92),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildImmersiveStyleBody(
+    BuildContext context,
+    Track track,
+    double scale,
+  ) {
+    final bottomInset = MediaQuery.of(context).padding.bottom;
+    final isGlassBar = store.bottomBarStyle == BottomBarStyle.glass;
+    final lyricLine = _currentLyricLine(store.positionMs);
+
+    return Column(
+      children: [
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Spacer(),
+                GestureDetector(
+                  onTap: store.togglePlayPause,
+                  onHorizontalDragStart: _onCoverHorizontalDragStart,
+                  onHorizontalDragUpdate: _onCoverHorizontalDragUpdate,
+                  onHorizontalDragEnd: _onCoverHorizontalDragEnd,
+                  child: Container(
+                    width: 240 * scale,
+                    height: 240 * scale,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(28),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.42),
+                          blurRadius: 34,
+                          offset: const Offset(0, 16),
+                        ),
+                      ],
+                    ),
+                    child: CoverArtWidget(
+                      track: track,
+                      localPath: store.coverPathFor(track),
+                      accentColor: store.accentColor,
+                      size: 260,
+                      borderRadius: 28,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                GestureDetector(
+                  onTap: _openFullLyrics,
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.14),
+                      ),
+                    ),
+                    child: Text(
+                      lyricLine ?? '轻触查看完整歌词 · 支持外挂歌词导入',
+                      maxLines: 2,
+                      textAlign: TextAlign.center,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 14.5 * scale,
+                        fontWeight: FontWeight.w500,
+                        color: Colors.white.withValues(alpha: 0.9),
+                        height: 1.4,
+                      ),
+                    ),
+                  ),
+                ),
+                const Spacer(),
+              ],
+            ),
+          ),
+        ),
+        _buildMetadataBlock(context, track, scale),
+        SizedBox(height: 14 * scale),
+        _buildFiveActionButtons(context, track, scale),
+        SizedBox(height: 10 * scale),
+        _buildBottomRegion(
+          context,
+          track,
+          isActive: true,
+          scale: scale,
+          bottomInset: bottomInset,
+          isGlassBar: isGlassBar,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildRecommendStyleBody(
+    BuildContext context,
+    Track track,
+    double scale,
+  ) {
+    final bottomInset = MediaQuery.of(context).padding.bottom;
+    final isGlassBar = store.bottomBarStyle == BottomBarStyle.glass;
+    final lyricLine = _currentLyricLine(store.positionMs);
+
+    return Column(
+      children: [
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(22, 8, 22, 8),
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.09),
+                borderRadius: BorderRadius.circular(26),
+                border: Border.all(
+                  color: Colors.white.withValues(alpha: 0.18),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: store.accentColor.withValues(alpha: 0.28),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.auto_awesome_rounded,
+                              size: 13,
+                              color: Colors.white,
+                            ),
+                            SizedBox(width: 5),
+                            Text(
+                              '每日漫游推荐',
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Spacer(),
+                      TextButton.icon(
+                        onPressed: store.importExternalLyric,
+                        style: TextButton.styleFrom(
+                          foregroundColor: Colors.white.withValues(alpha: 0.85),
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        icon: const Icon(Icons.lyrics_outlined, size: 16),
+                        label: const Text('导入词', style: TextStyle(fontSize: 12)),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Expanded(
+                    child: Center(
+                      child: AspectRatio(
+                        aspectRatio: 1,
+                        child: GestureDetector(
+                          onTap: store.togglePlayPause,
+                          onHorizontalDragStart: _onCoverHorizontalDragStart,
+                          onHorizontalDragUpdate: _onCoverHorizontalDragUpdate,
+                          onHorizontalDragEnd: _onCoverHorizontalDragEnd,
+                          child: CoverArtWidget(
+                            track: track,
+                            localPath: store.coverPathFor(track),
+                            accentColor: store.accentColor,
+                            size: 260,
+                            borderRadius: 22,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  if (lyricLine != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Text(
+                        lyricLine,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 13 * scale,
+                          color: Colors.white.withValues(alpha: 0.8),
+                        ),
+                      ),
+                    ),
+                  Row(
+                    children: [
+                      IconButton(
+                        onPressed: store.playPrevious,
+                        icon: const Icon(
+                          Icons.skip_previous_rounded,
+                          color: Colors.white,
+                        ),
+                      ),
+                      const Spacer(),
+                      FilledButton.tonalIcon(
+                        onPressed: store.refreshRecommendQueue,
+                        style: FilledButton.styleFrom(
+                          backgroundColor: Colors.white.withValues(alpha: 0.16),
+                          foregroundColor: Colors.white,
+                        ),
+                        icon: const Icon(Icons.refresh_rounded, size: 18),
+                        label: const Text('换一批'),
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        onPressed: store.playNext,
+                        icon: const Icon(
+                          Icons.skip_next_rounded,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        _buildMetadataBlock(context, track, scale),
+        SizedBox(height: 12 * scale),
+        _buildFiveActionButtons(context, track, scale),
+        SizedBox(height: 8 * scale),
+        _buildBottomRegion(
+          context,
+          track,
+          isActive: true,
+          scale: scale,
+          bottomInset: bottomInset,
+          isGlassBar: isGlassBar,
+        ),
+      ],
+    );
+  }
 }
+
+class _GlassActionSquare extends StatelessWidget {
+  const _GlassActionSquare({
+    required this.height,
+    required this.onTap,
+    required this.child,
+  });
+
+  final double height;
+  final VoidCallback onTap;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        height: height,
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(15),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.22),
+            width: 1,
+          ),
+        ),
+        child: Center(child: child),
+      ),
+    );
+  }
+}
+
+class _DottedUnderlinePainter extends CustomPainter {
+  const _DottedUnderlinePainter({required this.color});
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = 1.4
+      ..style = PaintingStyle.fill;
+
+    const dotWidth = 2.0;
+    const gap = 3.0;
+    final y = size.height - 1.0;
+
+    double x = 0;
+    while (x + dotWidth <= size.width) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromLTWH(x, y - 0.7, dotWidth, 1.4),
+          const Radius.circular(0.7),
+        ),
+        paint,
+      );
+      x += dotWidth + gap;
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _DottedUnderlinePainter oldDelegate) {
+    return oldDelegate.color != color;
+  }
+}
+
+class _FullWidthTrackShape extends RoundedRectSliderTrackShape {
+  const _FullWidthTrackShape();
+
+  @override
+  Rect getPreferredRect({
+    required RenderBox parentBox,
+    Offset offset = Offset.zero,
+    required SliderThemeData sliderTheme,
+    bool isEnabled = false,
+    bool isDiscrete = false,
+  }) {
+    final trackHeight = sliderTheme.trackHeight ?? 2.5;
+    final trackLeft = offset.dx + 6;
+    final trackTop =
+        offset.dy + (parentBox.size.height - trackHeight) / 2;
+    final trackWidth = math.max(0.0, parentBox.size.width - 12);
+    return Rect.fromLTWH(trackLeft, trackTop, trackWidth, trackHeight);
+  }
+}
+

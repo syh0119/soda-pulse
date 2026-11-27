@@ -239,7 +239,7 @@ class AppStore extends ChangeNotifier {
       : _bridge = bridge ?? NativePlayerBridge();
 
   static const String _prefsKey = 'soda_pulse_store_v1';
-  static const Color _defaultAccent = Color(0xFF38BDF8);
+  static const Color _defaultAccent = Color(0xFF2FE08B);
 
   final NativePlayerBridge _bridge;
   final Random _random = Random();
@@ -252,7 +252,9 @@ class AppStore extends ChangeNotifier {
   List<Track> _queue = <Track>[];
   int _currentIndex = -1;
   ParsedLyric _currentLyrics = LyricParser.parse('');
+  String _lyricSourceLabel = '';
   PlaybackSnapshot _snapshot = const PlaybackSnapshot();
+  int _snapshotTimestampMs = 0;
   bool _scanning = false;
 
   PlayMode _playMode = PlayMode.sequence;
@@ -308,7 +310,17 @@ class AppStore extends ChangeNotifier {
           ? _queue[_currentIndex]
           : null;
   ParsedLyric get currentLyrics => _currentLyrics;
+  String get lyricSourceLabel => _lyricSourceLabel;
   PlaybackSnapshot get snapshot => _snapshot;
+  int get livePositionMs {
+    final base = _snapshot.positionMs;
+    if (!isPlaying || _snapshotTimestampMs <= 0) return base;
+    final elapsed = DateTime.now().millisecondsSinceEpoch - _snapshotTimestampMs;
+    if (elapsed <= 0) return base;
+    final est = base + (elapsed * _playbackSpeed).round();
+    final maxDur = currentTrack?.durationMs ?? _snapshot.durationMs;
+    return maxDur > 0 ? est.clamp(0, maxDur) : est;
+  }
   Color get accentColor {
     final t = currentTrack;
     if (t != null && _coverColorCache.containsKey(t.id)) {
@@ -398,6 +410,7 @@ class AppStore extends ChangeNotifier {
     await _stateSub?.cancel();
     _stateSub = _bridge.stateStream.listen((snap) {
       _snapshot = snap;
+      _snapshotTimestampMs = DateTime.now().millisecondsSinceEpoch;
       notifyListeners();
     });
 
@@ -547,6 +560,8 @@ class AppStore extends ChangeNotifier {
     }
 
     String resolvedRawLyric = '';
+    String resolvedTranslation = '';
+    String resolvedRoma = '';
     if (track.isOnlinePluginTrack && track.uri.isEmpty && track.rawPluginData != null) {
       final urlRes = await _bridge.pluginResolveUrl(
         track.pluginId!,
@@ -574,6 +589,8 @@ class AppStore extends ChangeNotifier {
         track.rawPluginData!,
       );
       resolvedRawLyric = (lyricRes['raw'] ?? '').toString();
+      resolvedTranslation = (lyricRes['translation'] ?? '').toString();
+      _lyricSourceLabel = 'PLUGIN';
     } else {
       final lyricMap = await _bridge.readTrackLyrics(
         filePath: track.filePath,
@@ -585,14 +602,31 @@ class AppStore extends ChangeNotifier {
               lyricMap['text'] ??
               '')
           .toString();
+      resolvedTranslation = (lyricMap['translation'] ?? '').toString();
+      resolvedRoma = (lyricMap['roma'] ?? '').toString();
+      final src = (lyricMap['source'] ?? '').toString();
+      final fmt = (lyricMap['formatHint'] ?? '').toString();
+      _lyricSourceLabel = src.startsWith('embedded')
+          ? 'EMBEDDED'
+          : (fmt.isNotEmpty ? fmt.toUpperCase() : '');
     }
 
     if (resolvedRawLyric.trim().isNotEmpty) {
-      _currentLyrics = LyricParser.parse(resolvedRawLyric);
+      _currentLyrics = LyricParser.parse(
+        resolvedRawLyric,
+        translationRaw: resolvedTranslation.trim().isNotEmpty ? resolvedTranslation : null,
+        romaRaw: resolvedRoma.trim().isNotEmpty ? resolvedRoma : null,
+        durationMs: track.durationMs,
+      );
+      if (_lyricSourceLabel.isEmpty) {
+        _lyricSourceLabel = _currentLyrics.format.name.toUpperCase();
+      }
     } else if (track.isDemo) {
       _currentLyrics = LyricParser.demoLyrics();
+      _lyricSourceLabel = 'DEMO';
     } else {
       _currentLyrics = LyricParser.parse('');
+      _lyricSourceLabel = '';
     }
     _playCounts[track.id] = (_playCounts[track.id] ?? 0) + 1;
 
@@ -700,6 +734,8 @@ class AppStore extends ChangeNotifier {
 
   Future<void> seekTo(int ms) async {
     final clamped = ms < 0 ? 0 : ms;
+    _snapshot = _snapshot.copyWith(positionMs: clamped);
+    _snapshotTimestampMs = DateTime.now().millisecondsSinceEpoch;
     await _bridge.seekTo(clamped);
   }
 

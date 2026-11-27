@@ -60,19 +60,30 @@ class _StarSkinBackgroundState extends State<StarSkinBackground>
         widget.skin == AppSkin.star || widget.skin == AppSkin.soda;
 
     final Color complementaryColor =
-        isSoda ? const Color(0xFF34D399) : const Color(0xFF6366F1);
+        isSoda ? const Color(0xFF2FE08B) : const Color(0xFF1B7A4B);
 
-    final Color topTint = Color.lerp(
-      const Color(0xFF0A0D14),
-      widget.accentColor,
-      isCover ? 0.28 : 0.11,
-    )!;
-    final Color midTint = Color.lerp(
-      const Color(0xFF07090F),
-      widget.accentColor,
-      isCover ? 0.16 : 0.05,
-    )!;
-    const Color bottomBase = Color(0xFF05070B);
+    final HSLColor accentHsl = HSLColor.fromColor(widget.accentColor);
+    final Color coverTop = accentHsl
+        .withSaturation((accentHsl.saturation * 0.72).clamp(0.28, 0.78))
+        .withLightness(0.22)
+        .toColor();
+    final Color coverMid = accentHsl
+        .withSaturation((accentHsl.saturation * 0.76).clamp(0.32, 0.82))
+        .withLightness(0.14)
+        .toColor();
+    final Color coverBottom = accentHsl
+        .withSaturation((accentHsl.saturation * 0.78).clamp(0.30, 0.84))
+        .withLightness(0.08)
+        .toColor();
+
+    final Color topTint = isCover
+        ? coverTop
+        : Color.lerp(const Color(0xFF0A0D0E), widget.accentColor, 0.14)!;
+    final Color midTint = isCover
+        ? coverMid
+        : Color.lerp(const Color(0xFF080B0C), widget.accentColor, 0.06)!;
+    final Color bottomBase =
+        isCover ? coverBottom : const Color(0xFF060809);
 
     final Widget bg = RepaintBoundary(
       child: AnimatedBuilder(

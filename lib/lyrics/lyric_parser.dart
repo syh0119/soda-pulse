@@ -380,6 +380,10 @@ class LyricParser {
         cleanedWords = sortedWords;
       }
 
+      if (line.text.trim().isEmpty) {
+        continue;
+      }
+
       result.add(
         LyricLine(
           text: line.text,

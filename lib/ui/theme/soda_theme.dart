@@ -4,13 +4,13 @@ import 'package:flutter/material.dart';
 import 'package:soda_pulse/models/track.dart';
 
 class SodaTheme {
-  static const Color bgNight = Color(0xFF090C12);
+  static const Color bgNight = Color(0xFF0A0D0E);
   static const Color bgDeep = bgNight;
-  static const Color bgCard = Color(0xFF121826);
-  static const Color bgElevated = Color(0xFF1A2234);
-  static const Color seedCyan = Color(0xFF38BDF8);
+  static const Color bgCard = Color(0xFF13171A);
+  static const Color bgElevated = Color(0xFF181D20);
+  static const Color seedCyan = Color(0xFF2FE08B);
   static const Color accent = seedCyan;
-  static const Color seedMint = Color(0xFF4CE0B3);
+  static const Color seedMint = Color(0xFF2FE08B);
 
   static ThemeData buildDarkTheme() {
     final colorScheme = ColorScheme.fromSeed(
