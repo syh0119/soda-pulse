@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:soda_pulse/core/daily_copy.dart';
+import 'package:soda_pulse/core/t2s_converter.dart';
 import 'package:soda_pulse/lyrics/lyric_models.dart';
 import 'package:soda_pulse/lyrics/lyric_parser.dart';
 import 'package:soda_pulse/models/track.dart';
@@ -20,10 +22,36 @@ enum PlayMode {
 }
 
 enum PlayerStyle {
+  free('Free 模式'),
   immersive('沉浸式'),
-  free('封面在上');
+  recommend('推荐封面');
 
   const PlayerStyle(this.label);
+  final String label;
+}
+
+enum BottomBarStyle {
+  native('原生底栏'),
+  glass('玻璃底栏');
+
+  const BottomBarStyle(this.label);
+  final String label;
+}
+
+enum CarLayoutMode {
+  auto('自动'),
+  on('开启'),
+  off('关闭');
+
+  const CarLayoutMode(this.label);
+  final String label;
+}
+
+enum FullLyricStyle {
+  appleBlur('AppleMusic 模糊'),
+  starPure('星澜纯净');
+
+  const FullLyricStyle(this.label);
   final String label;
 }
 
@@ -74,39 +102,39 @@ class SoundFxPresets {
       preGain: 0.0,
     ),
     SoundFxPreset(
-      id: 'vocal',
-      name: '人声靠前',
-      subtitle: '人声结像清晰',
-      gains: <double>[-1.5, 1.0, 3.5, 2.5, 0.5],
-      preGain: -1.0,
-    ),
-    SoundFxPreset(
-      id: 'pop',
-      name: '流行电音',
-      subtitle: '适合流行与电音',
-      gains: <double>[3.5, 1.5, -0.5, 2.5, 3.0],
+      id: 'apple',
+      name: 'Apple 清透',
+      subtitle: '三频通透均衡、细节清晰',
+      gains: <double>[2.2, -0.6, 0.8, 2.4, 1.2],
       preGain: -2.0,
     ),
     SoundFxPreset(
-      id: 'bass',
-      name: '重低音',
-      subtitle: '下潜深沉有力',
-      gains: <double>[6.0, 3.5, 0.0, -0.5, 1.0],
+      id: 'bose',
+      name: 'BOSE 暖厚',
+      subtitle: '低频下潜饱满、去浑浊',
+      gains: <double>[3.8, -0.8, 0.5, 1.8, 1.0],
+      preGain: -2.5,
+    ),
+    SoundFxPreset(
+      id: 'jbl',
+      name: 'JBL 动感',
+      subtitle: '节奏弹跳有力、适合流行电音',
+      gains: <double>[4.1, -0.5, 0.2, 2.6, 1.4],
       preGain: -3.0,
     ),
     SoundFxPreset(
-      id: 'aurora',
-      name: '极光环绕',
-      subtitle: '宽阔声场与空气感',
-      gains: <double>[2.0, -1.0, 1.5, 3.5, 4.5],
-      preGain: -2.0,
+      id: 'harman',
+      name: 'Harman 高保真',
+      subtitle: '哈曼曲线参考、人声结像自然',
+      gains: <double>[2.8, -0.7, 1.2, 2.2, 0.8],
+      preGain: -2.5,
     ),
     SoundFxPreset(
       id: 'night',
       name: '深夜纯净',
       subtitle: '柔和耐听不刺耳',
-      gains: <double>[1.5, 1.0, 0.5, -1.5, -2.5],
-      preGain: -0.5,
+      gains: <double>[1.5, 0.6, 0.5, -1.2, -1.4],
+      preGain: -1.0,
     ),
     SoundFxPreset(
       id: 'custom',
@@ -228,9 +256,15 @@ class AppStore extends ChangeNotifier {
   bool _scanning = false;
 
   PlayMode _playMode = PlayMode.sequence;
-  PlayerStyle _playerStyle = PlayerStyle.immersive;
-  AppSkin _skin = AppSkin.soda;
+  PlayerStyle _playerStyle = PlayerStyle.free;
+  AppSkin _skin = AppSkin.cover;
   RecommendMode _recommendMode = RecommendMode.balanced;
+  BottomBarStyle _bottomBarStyle = BottomBarStyle.native;
+  CarLayoutMode _carLayoutMode = CarLayoutMode.auto;
+  FullLyricStyle _fullLyricStyle = FullLyricStyle.appleBlur;
+  bool _minimalLyricMode = false;
+  bool _autoPlayOnLaunch = false;
+  String? _lastPlayedTrackId;
 
   bool _pureMode = false;
   bool _showTranslation = true;
@@ -239,7 +273,11 @@ class AppStore extends ChangeNotifier {
   double _playbackSpeed = 1.0;
 
   Duration? _sleepTimerRemaining;
+  Duration? _sleepTimerTotal;
   bool _sleepAfterCurrentTrack = false;
+  int _quoteIndex = 0;
+  String? _startupPluginToast;
+  Timer? _toastTimer;
 
   final Set<String> _favoriteIds = <String>{};
   final List<UserPlaylist> _playlists = <UserPlaylist>[];
@@ -254,6 +292,9 @@ class AppStore extends ChangeNotifier {
   double _eqPreGain = 0.0;
 
   final List<MusicSourcePlugin> _plugins = <MusicSourcePlugin>[];
+  final Map<String, Map<String, dynamic>> _pluginTestResults =
+      <String, Map<String, dynamic>>{};
+  final Map<String, Track> _onlineTrackCache = <String, Track>{};
   final Map<String, String> _coverPathCache = <String, String>{};
   final Map<String, Color> _coverColorCache = <String, Color>{};
   final Set<String> _coverLoadingIds = <String>{};
@@ -301,6 +342,14 @@ class AppStore extends ChangeNotifier {
   PlayerStyle get playerStyle => _playerStyle;
   AppSkin get skin => _skin;
   RecommendMode get recommendMode => _recommendMode;
+  BottomBarStyle get bottomBarStyle => _bottomBarStyle;
+  CarLayoutMode get carLayoutMode => _carLayoutMode;
+  FullLyricStyle get fullLyricStyle => _fullLyricStyle;
+  bool get minimalLyricMode => _minimalLyricMode;
+  bool get autoPlayOnLaunch => _autoPlayOnLaunch;
+  String? get startupPluginToast => _startupPluginToast;
+  String get currentListenQuote =>
+      DailyCopy.listeningQuotes[_quoteIndex % DailyCopy.listeningQuotes.length];
 
   bool get pureMode => _pureMode;
   bool get showTranslation => _showTranslation;
@@ -309,11 +358,23 @@ class AppStore extends ChangeNotifier {
   double get playbackSpeed => _playbackSpeed;
 
   Duration? get sleepTimerRemaining => _sleepTimerRemaining;
+  Duration? get sleepTimerTotal => _sleepTimerTotal;
+  double get sleepTimerProgress {
+    final rem = _sleepTimerRemaining;
+    final tot = _sleepTimerTotal;
+    if (rem == null || tot == null || tot.inSeconds <= 0) return 0.0;
+    return (rem.inSeconds / tot.inSeconds).clamp(0.0, 1.0);
+  }
   bool get sleepAfterCurrentTrack => _sleepAfterCurrentTrack;
 
   Set<String> get favoriteIds => Set<String>.unmodifiable(_favoriteIds);
-  List<Track> get favoriteTracks =>
-      _library.where((t) => _favoriteIds.contains(t.id)).toList();
+  List<Track> get favoriteTracks {
+    final all = <String, Track>{
+      for (final t in _library) t.id: t,
+      ..._onlineTrackCache,
+    };
+    return _favoriteIds.map((id) => all[id]).whereType<Track>().toList();
+  }
   List<UserPlaylist> get playlists => List<UserPlaylist>.unmodifiable(_playlists);
   List<HistoryEntry> get history => List<HistoryEntry>.unmodifiable(_history);
   Map<String, int> get playCounts => Map<String, int>.unmodifiable(_playCounts);
@@ -347,6 +408,16 @@ class AppStore extends ChangeNotifier {
     await _bridge.requestPermissions();
     await rescanLibrary();
     await _applyEqToNative();
+    unawaited(_bootstrapEnabledPlugins());
+
+    if (_autoPlayOnLaunch && _queue.isNotEmpty) {
+      var targetIdx = 0;
+      if (_lastPlayedTrackId != null) {
+        final found = _queue.indexWhere((t) => t.id == _lastPlayedTrackId);
+        if (found >= 0) targetIdx = found;
+      }
+      unawaited(playTrackFromQueue(targetIdx));
+    }
 
     _ticker?.cancel();
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -468,20 +539,56 @@ class AppStore extends ChangeNotifier {
   Future<void> playTrackFromQueue(int index) async {
     if (index < 0 || index >= _queue.length) return;
     _currentIndex = index;
-    final track = _queue[index];
+    var track = _queue[index];
+    _lastPlayedTrackId = track.id;
 
-    final lyricMap = await _bridge.readTrackLyrics(
-      filePath: track.filePath,
-      uri: track.uri,
-    );
-    final rawLyric = (lyricMap['raw'] ??
-            lyricMap['lyric'] ??
-            lyricMap['lrc'] ??
-            lyricMap['text'] ??
-            '')
-        .toString();
-    if (rawLyric.trim().isNotEmpty) {
-      _currentLyrics = LyricParser.parse(rawLyric);
+    if (track.isOnlinePluginTrack) {
+      _onlineTrackCache[track.id] = track;
+    }
+
+    String resolvedRawLyric = '';
+    if (track.isOnlinePluginTrack && track.uri.isEmpty && track.rawPluginData != null) {
+      final urlRes = await _bridge.pluginResolveUrl(
+        track.pluginId!,
+        track.rawPluginData!,
+        quality: 'standard',
+        source: track.sourcePlatform ?? '',
+      );
+      final resolvedUrl = (urlRes['url'] ?? '').toString().trim();
+      Map<String, String>? resolvedHeaders;
+      if (urlRes['headers'] is Map) {
+        resolvedHeaders = <String, String>{};
+        (urlRes['headers'] as Map).forEach((k, v) {
+          if (k != null && v != null) {
+            resolvedHeaders![k.toString()] = v.toString();
+          }
+        });
+      }
+      if (resolvedUrl.isNotEmpty) {
+        track = track.copyWith(uri: resolvedUrl, headers: resolvedHeaders);
+        _queue[index] = track;
+        _onlineTrackCache[track.id] = track;
+      }
+      final lyricRes = await _bridge.pluginResolveLyric(
+        track.pluginId!,
+        track.rawPluginData!,
+      );
+      resolvedRawLyric = (lyricRes['raw'] ?? '').toString();
+    } else {
+      final lyricMap = await _bridge.readTrackLyrics(
+        filePath: track.filePath,
+        uri: track.uri,
+      );
+      resolvedRawLyric = (lyricMap['raw'] ??
+              lyricMap['lyric'] ??
+              lyricMap['lrc'] ??
+              lyricMap['text'] ??
+              '')
+          .toString();
+    }
+
+    if (resolvedRawLyric.trim().isNotEmpty) {
+      _currentLyrics = LyricParser.parse(resolvedRawLyric);
     } else if (track.isDemo) {
       _currentLyrics = LyricParser.demoLyrics();
     } else {
@@ -499,12 +606,16 @@ class AppStore extends ChangeNotifier {
         playedAtMs: DateTime.now().millisecondsSinceEpoch,
       ),
     );
-    if (_history.length > 200) {
-      _history.removeRange(200, _history.length);
+    if (_history.length > 500) {
+      _history.removeRange(500, _history.length);
     }
 
     notifyListeners();
-    await _bridge.loadAndPlay(track, parsedLyrics: _currentLyrics);
+    await _bridge.loadAndPlay(
+      track,
+      parsedLyrics: _currentLyrics,
+      headers: track.headers,
+    );
     if (_playbackSpeed != 1.0) {
       await _bridge.setPlaybackSpeed(_playbackSpeed);
     }
@@ -676,30 +787,28 @@ class AppStore extends ChangeNotifier {
 
   List<Track> _buildSmartQueue(List<Track> source, RecommendMode mode) {
     final list = List<Track>.from(source);
-    if (list.length <= 1) return list;
-
     switch (mode) {
-      case RecommendMode.balanced:
-        list.shuffle(_random);
-        list.sort((a, b) {
-          final favCmp = (_favoriteIds.contains(b.id) ? 1 : 0)
-              .compareTo(_favoriteIds.contains(a.id) ? 1 : 0);
-          return favCmp;
-        });
       case RecommendMode.familiar:
         list.sort((a, b) {
-          final countB =
-              (_playCounts[b.id] ?? 0) + (_favoriteIds.contains(b.id) ? 5 : 0);
-          final countA =
-              (_playCounts[a.id] ?? 0) + (_favoriteIds.contains(a.id) ? 5 : 0);
-          return countB.compareTo(countA);
+          final aScore = (_playCounts[a.id] ?? 0) + (_favoriteIds.contains(a.id) ? 5 : 0);
+          final bScore = (_playCounts[b.id] ?? 0) + (_favoriteIds.contains(b.id) ? 5 : 0);
+          return bScore.compareTo(aScore);
         });
       case RecommendMode.fresh:
         list.shuffle(_random);
         list.sort((a, b) {
-          final countA = _playCounts[a.id] ?? 0;
-          final countB = _playCounts[b.id] ?? 0;
-          return countA.compareTo(countB);
+          final aCount = _playCounts[a.id] ?? 0;
+          final bCount = _playCounts[b.id] ?? 0;
+          return aCount.compareTo(bCount);
+        });
+      case RecommendMode.balanced:
+        list.shuffle(_random);
+        list.sort((a, b) {
+          final aFav = _favoriteIds.contains(a.id) ? 2 : 0;
+          final bFav = _favoriteIds.contains(b.id) ? 2 : 0;
+          final aCount = (_playCounts[a.id] ?? 0).clamp(0, 4);
+          final bCount = (_playCounts[b.id] ?? 0).clamp(0, 4);
+          return (bFav + bCount).compareTo(aFav + aCount);
         });
     }
     return list;
@@ -707,7 +816,6 @@ class AppStore extends ChangeNotifier {
 
   Future<void> setPlaybackSpeed(double speed) async {
     final clamped = speed.clamp(0.5, 2.0);
-    if (_playbackSpeed == clamped) return;
     _playbackSpeed = clamped;
     await _bridge.setPlaybackSpeed(clamped);
     await _savePrefs();
@@ -716,16 +824,192 @@ class AppStore extends ChangeNotifier {
 
   void setSleepTimer(Duration? d) {
     _sleepTimerRemaining = d;
+    _sleepTimerTotal = d;
     if (d != null) {
       _sleepAfterCurrentTrack = false;
     }
     notifyListeners();
   }
 
+  void setBottomBarStyle(BottomBarStyle style) {
+    if (_bottomBarStyle == style) return;
+    _bottomBarStyle = style;
+    unawaited(_savePrefs());
+    notifyListeners();
+  }
+
+  void setCarLayoutMode(CarLayoutMode mode) {
+    if (_carLayoutMode == mode) return;
+    _carLayoutMode = mode;
+    unawaited(_savePrefs());
+    notifyListeners();
+  }
+
+  void setFullLyricStyle(FullLyricStyle style) {
+    if (_fullLyricStyle == style) return;
+    _fullLyricStyle = style;
+    unawaited(_savePrefs());
+    notifyListeners();
+  }
+
+  void setMinimalLyricMode(bool v) {
+    if (_minimalLyricMode == v) return;
+    _minimalLyricMode = v;
+    unawaited(_savePrefs());
+    notifyListeners();
+  }
+
+  void setAutoPlayOnLaunch(bool v) {
+    if (_autoPlayOnLaunch == v) return;
+    _autoPlayOnLaunch = v;
+    unawaited(_savePrefs());
+    notifyListeners();
+  }
+
+  void nextListenQuote() {
+    _quoteIndex = (_quoteIndex + 1) % DailyCopy.listeningQuotes.length;
+    notifyListeners();
+  }
+
+  void dismissStartupPluginToast() {
+    if (_startupPluginToast == null) return;
+    _startupPluginToast = null;
+    notifyListeners();
+  }
+
+  void refreshRecommendQueue() {
+    if (_library.isEmpty) return;
+    final active = currentTrack;
+    final rebuilt = _buildSmartQueue(_library, _recommendMode);
+    if (active != null) {
+      rebuilt.removeWhere((t) => t.id == active.id);
+      rebuilt.insert(0, active);
+      _currentIndex = 0;
+    }
+    _queue = rebuilt;
+    notifyListeners();
+  }
+
+  List<Track> searchLocalTracks(String query) {
+    final norm = T2SConverter.normalize(query);
+    if (norm.isEmpty) return library;
+    final all = <Track>[..._library, ..._onlineTrackCache.values];
+    final seen = <String>{};
+    final out = <Track>[];
+    for (final track in all) {
+      if (!seen.add(track.id)) continue;
+      if (T2SConverter.normalize(track.title).contains(norm) ||
+          T2SConverter.normalize(track.artist).contains(norm) ||
+          T2SConverter.normalize(track.album).contains(norm)) {
+        out.add(track);
+      }
+    }
+    return out;
+  }
+
+  List<Track> tracksByArtist(String artistQuery) {
+    final parts = artistQuery
+        .split(RegExp(r'[/、,&]'))
+        .map(T2SConverter.normalize)
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (parts.isEmpty) return const <Track>[];
+    final all = <Track>[..._library, ..._onlineTrackCache.values];
+    final seen = <String>{};
+    final out = <Track>[];
+    for (final track in all) {
+      if (!seen.add(track.id)) continue;
+      final normArtist = T2SConverter.normalize(track.artist);
+      if (parts.any(normArtist.contains)) {
+        out.add(track);
+      }
+    }
+    return out;
+  }
+
+  Map<String, dynamic>? pluginTestResult(String id) => _pluginTestResults[id];
+
+  Future<void> _bootstrapEnabledPlugins() async {
+    final enabled = _plugins.where((p) => p.enabled).toList();
+    if (enabled.isEmpty) return;
+    final names = <String>[];
+    for (final p in enabled) {
+      final res = await _bridge.pluginLoad(p.id, p.script, p.type.name);
+      if (res['ok'] == true) {
+        names.add(p.name);
+      }
+    }
+    if (names.isNotEmpty) {
+      _startupPluginToast = '已启用音源：${names.take(2).join(' / ')}';
+      notifyListeners();
+      _toastTimer?.cancel();
+      _toastTimer = Timer(const Duration(seconds: 3), () {
+        _startupPluginToast = null;
+        notifyListeners();
+      });
+    }
+  }
+
+  Future<Map<String, dynamic>> testPlugin(String id) async {
+    final idx = _plugins.indexWhere((p) => p.id == id);
+    if (idx < 0) return const <String, dynamic>{'ok': false, 'error': '插件不存在'};
+    final p = _plugins[idx];
+    await _bridge.pluginLoad(p.id, p.script, p.type.name);
+    final result = await _bridge.pluginTest(p.id);
+    _pluginTestResults[id] = result;
+    notifyListeners();
+    return result;
+  }
+
+  Future<List<Track>> searchOnlineTracks(String query) async {
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) return const <Track>[];
+    final enabled = _plugins.where((p) => p.enabled).toList();
+    if (enabled.isEmpty) return const <Track>[];
+    final results = <Track>[];
+    final seen = <String>{};
+    for (final p in enabled) {
+      await _bridge.pluginLoad(p.id, p.script, p.type.name);
+      final tracks = await _bridge.pluginSearch(p.id, trimmed, page: 1);
+      for (final t in tracks) {
+        if (seen.add(t.id)) {
+          _onlineTrackCache[t.id] = t;
+          results.add(t);
+        }
+      }
+    }
+    return results;
+  }
+
+  Future<int> importOnlinePlaylistFromPlugin(
+    String pluginId,
+    String urlOrId, {
+    String? customName,
+  }) async {
+    final idx = _plugins.indexWhere((p) => p.id == pluginId);
+    if (idx < 0) return 0;
+    final p = _plugins[idx];
+    await _bridge.pluginLoad(p.id, p.script, p.type.name);
+    final tracks = await _bridge.pluginImportSheet(p.id, urlOrId);
+    if (tracks.isEmpty) return 0;
+    for (final t in tracks) {
+      _onlineTrackCache[t.id] = t;
+    }
+    final plName = (customName != null && customName.trim().isNotEmpty)
+        ? customName.trim()
+        : '${p.name} 歌单 (${tracks.length}首)';
+    final plId = await createPlaylist(plName);
+    for (final t in tracks) {
+      await addTrackToPlaylist(plId, t);
+    }
+    return tracks.length;
+  }
+
   void setSleepAfterCurrentTrack(bool v) {
     _sleepAfterCurrentTrack = v;
     if (v) {
       _sleepTimerRemaining = null;
+      _sleepTimerTotal = null;
     }
     notifyListeners();
   }
@@ -742,7 +1026,7 @@ class AppStore extends ChangeNotifier {
 
   bool isFavorite(String id) => _favoriteIds.contains(id);
   int playCountFor(String id) => _playCounts[id] ?? 0;
-  List<Track> get topPlayedTracks => topRankedTracks(limit: 50);
+  List<Track> get topPlayedTracks => topRankedTracks(limit: 1000);
 
   UserPlaylist? playlistById(String id) {
     for (final p in _playlists) {
@@ -754,7 +1038,10 @@ class AppStore extends ChangeNotifier {
   List<Track> tracksInPlaylist(String playlistId) {
     final p = playlistById(playlistId);
     if (p == null) return const <Track>[];
-    final byId = <String, Track>{for (final t in _library) t.id: t};
+    final byId = <String, Track>{
+      for (final t in _library) t.id: t,
+      ..._onlineTrackCache,
+    };
     return p.trackIds
         .map((id) => byId[id])
         .whereType<Track>()
@@ -891,6 +1178,7 @@ class AppStore extends ChangeNotifier {
     );
     _plugins.removeWhere((p) => p.id == plugin.id);
     _plugins.insert(0, plugin);
+    unawaited(_bridge.pluginLoad(plugin.id, plugin.script, plugin.type.name));
     await _savePrefs();
     notifyListeners();
     return plugin;
@@ -912,6 +1200,15 @@ class AppStore extends ChangeNotifier {
     final idx = _plugins.indexWhere((p) => p.id == id);
     if (idx < 0) return;
     _plugins[idx] = _plugins[idx].copyWith(enabled: enabled);
+    if (enabled) {
+      unawaited(_bridge.pluginLoad(
+        _plugins[idx].id,
+        _plugins[idx].script,
+        _plugins[idx].type.name,
+      ));
+    } else {
+      unawaited(_bridge.pluginUnload(id));
+    }
     await _savePrefs();
     notifyListeners();
   }
@@ -921,6 +1218,8 @@ class AppStore extends ChangeNotifier {
 
   Future<void> removePlugin(String id) async {
     _plugins.removeWhere((p) => p.id == id);
+    _pluginTestResults.remove(id);
+    unawaited(_bridge.pluginUnload(id));
     await _savePrefs();
     notifyListeners();
   }
@@ -1123,18 +1422,36 @@ class AppStore extends ChangeNotifier {
       _playerStyle = _enumByName(
         PlayerStyle.values,
         decoded['playerStyle']?.toString(),
-        PlayerStyle.immersive,
+        PlayerStyle.free,
       );
       _skin = _enumByName(
         AppSkin.values,
         decoded['skin']?.toString(),
-        AppSkin.soda,
+        AppSkin.cover,
       );
       _recommendMode = _enumByName(
         RecommendMode.values,
         decoded['recommendMode']?.toString(),
         RecommendMode.balanced,
       );
+      _bottomBarStyle = _enumByName(
+        BottomBarStyle.values,
+        decoded['bottomBarStyle']?.toString(),
+        BottomBarStyle.native,
+      );
+      _carLayoutMode = _enumByName(
+        CarLayoutMode.values,
+        decoded['carLayoutMode']?.toString(),
+        CarLayoutMode.auto,
+      );
+      _fullLyricStyle = _enumByName(
+        FullLyricStyle.values,
+        decoded['fullLyricStyle']?.toString(),
+        FullLyricStyle.appleBlur,
+      );
+      _minimalLyricMode = decoded['minimalLyricMode'] == true;
+      _autoPlayOnLaunch = decoded['autoPlayOnLaunch'] == true;
+      _lastPlayedTrackId = decoded['lastPlayedTrackId']?.toString();
 
       _pureMode = decoded['pureMode'] == true;
       _showTranslation = decoded['showTranslation'] != false;
@@ -1225,6 +1542,15 @@ class AppStore extends ChangeNotifier {
                 .map((e) => MusicSourcePlugin.fromJson(Map<String, dynamic>.from(e))),
           );
       }
+      final rawOnlineTracks = decoded['onlineTracks'];
+      if (rawOnlineTracks is List) {
+        for (final item in rawOnlineTracks) {
+          if (item is Map) {
+            final t = Track.fromMap(Map<String, dynamic>.from(item));
+            if (t.id.isNotEmpty) _onlineTrackCache[t.id] = t;
+          }
+        }
+      }
     } catch (_) {
       // Ignore corrupted local preference data and use defaults.
     }
@@ -1236,6 +1562,12 @@ class AppStore extends ChangeNotifier {
       'playerStyle': _playerStyle.name,
       'skin': _skin.name,
       'recommendMode': _recommendMode.name,
+      'bottomBarStyle': _bottomBarStyle.name,
+      'carLayoutMode': _carLayoutMode.name,
+      'fullLyricStyle': _fullLyricStyle.name,
+      'minimalLyricMode': _minimalLyricMode,
+      'autoPlayOnLaunch': _autoPlayOnLaunch,
+      'lastPlayedTrackId': _lastPlayedTrackId,
       'pureMode': _pureMode,
       'showTranslation': _showTranslation,
       'showPhonetic': _showPhonetic,
@@ -1252,6 +1584,7 @@ class AppStore extends ChangeNotifier {
       'eqGains': _eqGains,
       'eqPreGain': _eqPreGain,
       'plugins': _plugins.map((p) => p.toJson()).toList(),
+      'onlineTracks': _onlineTrackCache.values.take(300).map((t) => t.toMap()).toList(),
     };
     await _bridge.savePreferences(<String, dynamic>{
       _prefsKey: jsonEncode(data),
@@ -1269,6 +1602,7 @@ class AppStore extends ChangeNotifier {
   @override
   void dispose() {
     _ticker?.cancel();
+    _toastTimer?.cancel();
     _stateSub?.cancel();
     super.dispose();
   }

@@ -465,6 +465,7 @@ object KaraokeOverlayController {
         try {
             wm.updateViewLayout(container, params)
         } catch (_: Exception) {
+            // Ignore if view is no longer attached
         }
     }
 
@@ -478,6 +479,7 @@ object KaraokeOverlayController {
                 try {
                     wm.removeView(container)
                 } catch (_: Exception) {
+                    // Ignore
                 }
             }
         }

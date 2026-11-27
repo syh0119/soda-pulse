@@ -22,11 +22,30 @@ class DiscoverPage extends StatefulWidget {
 class _DiscoverPageState extends State<DiscoverPage> {
   final TextEditingController _searchController = TextEditingController();
   String _query = '';
+  bool _searchingOnline = false;
+  List<Track> _onlineResults = const <Track>[];
 
   @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
+  }
+
+  Future<void> _triggerOnlineSearch() async {
+    final q = _query.trim();
+    if (q.isEmpty || _searchingOnline) return;
+    widget.store.addSearchQuery(q);
+    setState(() => _searchingOnline = true);
+    try {
+      final res = await widget.store.searchOnlineTracks(q);
+      if (mounted) {
+        setState(() => _onlineResults = res);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _searchingOnline = false);
+      }
+    }
   }
 
   String _recommendModeLabel(dynamic mode) {
@@ -72,7 +91,12 @@ class _DiscoverPageState extends State<DiscoverPage> {
           slivers: [
             SliverToBoxAdapter(
               child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                padding: EdgeInsets.fromLTRB(
+                  16,
+                  MediaQuery.paddingOf(context).top + 12,
+                  16,
+                  8,
+                ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -206,25 +230,103 @@ class _DiscoverPageState extends State<DiscoverPage> {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
-    final matchedTracks = widget.store.library.where((track) {
-      return track.title.toLowerCase().contains(query) ||
-          track.artist.toLowerCase().contains(query) ||
-          track.album.toLowerCase().contains(query);
-    }).toList();
+    final matchedTracks = widget.store.searchLocalTracks(query);
+    final hasEnabledPlugins = widget.store.plugins.any((p) => p.enabled);
 
     final matchedPlaylists = widget.store.playlists.where((playlist) {
       return playlist.name.toLowerCase().contains(query);
     }).toList();
 
-    if (matchedTracks.isEmpty && matchedPlaylists.isEmpty) {
-      return [
+    return [
+      if (hasEnabledPlugins)
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+            child: Row(
+              children: [
+                FilledButton.tonalIcon(
+                  onPressed: _searchingOnline ? null : _triggerOnlineSearch,
+                  icon: _searchingOnline
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.travel_explore_rounded, size: 18),
+                  label: Text(_searchingOnline ? '正在通过插件搜索...' : '用已启用插件全网搜索'),
+                ),
+                const SizedBox(width: 8),
+                if (_onlineResults.isNotEmpty)
+                  Text(
+                    '找到 ${_onlineResults.length} 首',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: colorScheme.primary,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      if (_onlineResults.isNotEmpty) ...[
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
+            child: Text(
+              '插件在线搜索结果 (${_onlineResults.length})',
+              style: theme.textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w700,
+                color: colorScheme.primary,
+              ),
+            ),
+          ),
+        ),
+        SliverList(
+          delegate: SliverChildBuilderDelegate(
+            (context, index) {
+              final track = _onlineResults[index];
+              return ListTile(
+                leading: Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: colorScheme.primary.withValues(alpha: 0.16),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(
+                    Icons.cloud_queue_rounded,
+                    color: colorScheme.primary,
+                  ),
+                ),
+                title: Text(
+                  track.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                subtitle: Text(
+                  '${track.artist} · ${track.sourcePlatform ?? "插件音源"}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                trailing: const Icon(Icons.play_circle_filled_rounded),
+                onTap: () => _playTracks(_onlineResults, initialIndex: index),
+              );
+            },
+            childCount: _onlineResults.length,
+          ),
+        ),
+      ],
+      if (matchedTracks.isEmpty &&
+          matchedPlaylists.isEmpty &&
+          _onlineResults.isEmpty)
         SliverFillRemaining(
           hasScrollBody: false,
           child: Center(
             child: Padding(
               padding: const EdgeInsets.all(32),
               child: Text(
-                '未找到匹配的歌曲或歌单',
+                hasEnabledPlugins
+                    ? '本地未匹配，可点击上方按钮用已导入插件搜索'
+                    : '未找到匹配的歌曲或歌单（支持繁简互搜）',
                 style: theme.textTheme.bodyMedium?.copyWith(
                   color: colorScheme.onSurface.withValues(alpha: 0.55),
                 ),
@@ -232,10 +334,6 @@ class _DiscoverPageState extends State<DiscoverPage> {
             ),
           ),
         ),
-      ];
-    }
-
-    return [
       if (matchedPlaylists.isNotEmpty) ...[
         SliverToBoxAdapter(
           child: Padding(

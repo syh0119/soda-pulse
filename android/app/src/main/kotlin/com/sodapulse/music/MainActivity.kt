@@ -391,6 +391,99 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
+            "pluginLoad" -> {
+                val id = call.argument<String>("id") ?: ""
+                val script = call.argument<String>("script") ?: ""
+                val type = call.argument<String>("type") ?: "musicFree"
+                executor.execute {
+                    try {
+                        val res = SodaJsPluginRuntime.loadPlugin(applicationContext, id, script, type)
+                        mainHandler.post { result.success(res) }
+                    } catch (e: Exception) {
+                        mainHandler.post { result.success(mapOf("ok" to false, "error" to (e.message ?: "load failed"))) }
+                    }
+                }
+            }
+
+            "pluginUnload" -> {
+                val id = call.argument<String>("id") ?: ""
+                executor.execute {
+                    val ok = try {
+                        SodaJsPluginRuntime.unloadPlugin(id)
+                    } catch (_: Exception) {
+                        false
+                    }
+                    mainHandler.post { result.success(ok) }
+                }
+            }
+
+            "pluginTest" -> {
+                val id = call.argument<String>("id") ?: ""
+                executor.execute {
+                    try {
+                        val res = SodaJsPluginRuntime.testPlugin(applicationContext, id)
+                        mainHandler.post { result.success(res) }
+                    } catch (e: Exception) {
+                        mainHandler.post { result.success(mapOf("ok" to false, "error" to (e.message ?: "test failed"))) }
+                    }
+                }
+            }
+
+            "pluginSearch" -> {
+                val pluginId = call.argument<String>("pluginId") ?: ""
+                val query = call.argument<String>("query") ?: ""
+                val page = call.argument<Number>("page")?.toInt() ?: 1
+                executor.execute {
+                    try {
+                        val tracks = SodaJsPluginRuntime.searchTracks(applicationContext, pluginId, query, page)
+                        mainHandler.post { result.success(tracks) }
+                    } catch (e: Exception) {
+                        mainHandler.post { result.success(emptyList<Map<String, Any?>>()) }
+                    }
+                }
+            }
+
+            "pluginResolveUrl" -> {
+                val pluginId = call.argument<String>("pluginId") ?: ""
+                val rawItemJson = call.argument<String>("rawItemJson") ?: "{}"
+                val quality = call.argument<String>("quality") ?: "standard"
+                val source = call.argument<String>("source") ?: ""
+                executor.execute {
+                    try {
+                        val res = SodaJsPluginRuntime.resolveMediaUrl(applicationContext, pluginId, rawItemJson, quality, source)
+                        mainHandler.post { result.success(res) }
+                    } catch (e: Exception) {
+                        mainHandler.post { result.success(mapOf("ok" to false, "error" to (e.message ?: "resolve failed"))) }
+                    }
+                }
+            }
+
+            "pluginResolveLyric" -> {
+                val pluginId = call.argument<String>("pluginId") ?: ""
+                val rawItemJson = call.argument<String>("rawItemJson") ?: "{}"
+                executor.execute {
+                    try {
+                        val res = SodaJsPluginRuntime.resolveLyric(applicationContext, pluginId, rawItemJson)
+                        mainHandler.post { result.success(res) }
+                    } catch (e: Exception) {
+                        mainHandler.post { result.success(mapOf("ok" to false, "error" to (e.message ?: "lyric failed"))) }
+                    }
+                }
+            }
+
+            "pluginImportSheet" -> {
+                val pluginId = call.argument<String>("pluginId") ?: ""
+                val urlOrId = call.argument<String>("urlOrId") ?: ""
+                executor.execute {
+                    try {
+                        val tracks = SodaJsPluginRuntime.importMusicSheet(applicationContext, pluginId, urlOrId)
+                        mainHandler.post { result.success(tracks) }
+                    } catch (e: Exception) {
+                        mainHandler.post { result.success(emptyList<Map<String, Any?>>()) }
+                    }
+                }
+            }
+
             else -> result.notImplemented()
         }
     }

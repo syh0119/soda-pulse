@@ -15,3 +15,8 @@
 
 # Flutter deferred components (not bundled in direct APK)
 -dontwarn com.google.android.play.core.**
+
+# WebView JS Plugin Bridge
+-keepclassmembers class com.sodapulse.music.SodaJsPluginRuntime$NativeBridge {
+    @android.webkit.JavascriptInterface <methods>;
+}

@@ -39,7 +39,40 @@ class ListenRankPage extends StatelessWidget {
             slivers: [
               SliverToBoxAdapter(
                 child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: colors.primary.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: colors.primary.withValues(alpha: 0.25),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.format_quote_rounded, color: colors.primary, size: 20),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            store.currentListenQuote,
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: colors.onSurface.withValues(alpha: 0.9),
+                            ),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: store.nextListenQuote,
+                          child: const Text('换一句'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
                   child: _HourlyDistributionCard(counts: hourlyCounts),
                 ),
               ),
@@ -1178,6 +1211,96 @@ class PluginManagerPage extends StatelessWidget {
                                               .toList(),
                                         ),
                                       ],
+                                      const SizedBox(height: 10),
+                                      Wrap(
+                                        spacing: 8,
+                                        runSpacing: 6,
+                                        children: [
+                                          FilledButton.tonalIcon(
+                                            style: FilledButton.styleFrom(
+                                              visualDensity: VisualDensity.compact,
+                                              padding: const EdgeInsets.symmetric(
+                                                horizontal: 10,
+                                                vertical: 4,
+                                              ),
+                                            ),
+                                            onPressed: () async {
+                                              final messenger =
+                                                  ScaffoldMessenger.of(context);
+                                              messenger.showSnackBar(
+                                                SnackBar(
+                                                  content: Text(
+                                                    '正在本机沙箱检测 ${plugin.name}...',
+                                                  ),
+                                                  duration: const Duration(seconds: 2),
+                                                ),
+                                              );
+                                              final res = await store.testPlugin(plugin.id);
+                                              final ok = res['ok'] == true;
+                                              final summary = (res['summary'] ??
+                                                      res['error'] ??
+                                                      (ok ? '检测通过' : '检测失败'))
+                                                  .toString();
+                                              messenger.showSnackBar(
+                                                SnackBar(content: Text(summary)),
+                                              );
+                                            },
+                                            icon: const Icon(
+                                              Icons.science_rounded,
+                                              size: 15,
+                                            ),
+                                            label: const Text(
+                                              '测试插件',
+                                              style: TextStyle(fontSize: 12),
+                                            ),
+                                          ),
+                                          if (plugin.type == PluginType.musicFree)
+                                            OutlinedButton.icon(
+                                              style: OutlinedButton.styleFrom(
+                                                visualDensity: VisualDensity.compact,
+                                                padding: const EdgeInsets.symmetric(
+                                                  horizontal: 10,
+                                                  vertical: 4,
+                                                ),
+                                              ),
+                                              onPressed: () => _showImportSheetDialog(
+                                                context,
+                                                plugin.id,
+                                                plugin.name,
+                                              ),
+                                              icon: const Icon(
+                                                Icons.playlist_add_rounded,
+                                                size: 15,
+                                              ),
+                                              label: const Text(
+                                                '导入云端歌单',
+                                                style: TextStyle(fontSize: 12),
+                                              ),
+                                            ),
+                                        ],
+                                      ),
+                                      if (store.pluginTestResult(plugin.id) != null) ...[
+                                        const SizedBox(height: 8),
+                                        Builder(
+                                          builder: (_) {
+                                            final r = store.pluginTestResult(plugin.id)!;
+                                            final ok = r['ok'] == true;
+                                            final ms = r['latencyMs'] ?? 0;
+                                            final summary = (r['summary'] ??
+                                                    r['error'] ??
+                                                    '')
+                                                .toString();
+                                            return Text(
+                                              '${ok ? "✓ 通过" : "✗ 异常"} (${ms}ms) · $summary',
+                                              style: theme.textTheme.labelSmall?.copyWith(
+                                                color: ok
+                                                    ? const Color(0xFF4CE0B3)
+                                                    : colors.error,
+                                              ),
+                                            );
+                                          },
+                                        ),
+                                      ],
                                     ],
                                   ),
                                 ),
@@ -1210,6 +1333,130 @@ class PluginManagerPage extends StatelessWidget {
                           );
                         },
                       ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _showImportSheetDialog(
+    BuildContext context,
+    String pluginId,
+    String pluginName,
+  ) async {
+    final controller = TextEditingController();
+    final urlOrId = await showDialog<String>(
+      context: context,
+      builder: (dCtx) => AlertDialog(
+        title: Text('通过 $pluginName 导入歌单'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: '输入歌单链接或歌单 ID',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dCtx).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dCtx).pop(controller.text.trim()),
+            child: const Text('导入'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (urlOrId == null || urlOrId.isEmpty) return;
+    final count = await store.importOnlinePlaylistFromPlugin(pluginId, urlOrId);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            count > 0 ? '成功导入 $count 首歌曲到「我的歌单」' : '未能解析到歌单曲目，请检查链接或插件支持',
+          ),
+        ),
+      );
+    }
+  }
+}
+
+class ArtistTracksPage extends StatelessWidget {
+  const ArtistTracksPage({
+    super.key,
+    required this.store,
+    required this.artistName,
+    required this.onOpenPlayer,
+  });
+
+  final AppStore store;
+  final String artistName;
+  final VoidCallback onOpenPlayer;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(artistName),
+      ),
+      body: ListenableBuilder(
+        listenable: store,
+        builder: (context, _) {
+          final tracks = store.tracksByArtist(artistName);
+          if (tracks.isEmpty) {
+            return const _EmptyPlaceholder(
+              icon: Icons.person_search_rounded,
+              message: '本地曲库暂无该歌手的更多歌曲',
+            );
+          }
+          return Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                child: Row(
+                  children: [
+                    FilledButton.icon(
+                      onPressed: () {
+                        store.playTrack(tracks.first, queue: tracks);
+                        onOpenPlayer();
+                      },
+                      icon: const Icon(Icons.play_arrow_rounded),
+                      label: const Text('播放全部'),
+                    ),
+                    const SizedBox(width: 12),
+                    Text(
+                      '共 ${tracks.length} 首歌曲',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurface
+                                .withValues(alpha: 0.65),
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: ListView.builder(
+                  itemCount: tracks.length,
+                  itemBuilder: (context, index) {
+                    final track = tracks[index];
+                    return _StandardTrackTile(
+                      track: track,
+                      isPlaying: store.currentTrack?.id == track.id,
+                      onTap: () {
+                        store.playTrack(track, queue: tracks);
+                        onOpenPlayer();
+                      },
+                      onMore: () => showTrackOptionsSheet(context, store, track),
+                    );
+                  },
+                ),
               ),
             ],
           );

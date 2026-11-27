@@ -45,4 +45,13 @@ class DailyCopy {
   }
 
   static DailyGreeting now() => forHour(DateTime.now().hour);
+
+  static const List<String> listeningQuotes = <String>[
+    '那些安静听歌的时刻，都是音乐在替你接住情绪。',
+    '耳机一戴，世界自动静音，只剩心跳和副歌同频。',
+    '单曲循环的不是旋律，而是某段舍不得翻篇的记忆。',
+    '好听的歌像气泡水，每一次重逢都还是清冽上头。',
+    '黑夜很长，但幸好歌单里总有一首能陪你走到天亮。',
+    '不必刻意记住时间，你听过的每一首歌都替你记着。',
+  ];
 }

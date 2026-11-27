@@ -430,6 +430,88 @@ class MinePage extends StatelessWidget {
                 color: colorScheme.outlineVariant.withValues(alpha: 0.25),
               ),
           ],
+          Divider(
+            height: 1,
+            indent: 58,
+            endIndent: 16,
+            color: colorScheme.outlineVariant.withValues(alpha: 0.25),
+          ),
+          ListTile(
+            leading: Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: colorScheme.primary.withValues(alpha: 0.14),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(
+                Icons.dock_rounded,
+                size: 20,
+                color: colorScheme.primary,
+              ),
+            ),
+            title: const Text(
+              '播放页底栏样式',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
+            trailing: SegmentedButton<BottomBarStyle>(
+              showSelectedIcon: false,
+              style: const ButtonStyle(
+                visualDensity: VisualDensity.compact,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              segments: const [
+                ButtonSegment(
+                  value: BottomBarStyle.native,
+                  label: Text('原生', style: TextStyle(fontSize: 12)),
+                ),
+                ButtonSegment(
+                  value: BottomBarStyle.glass,
+                  label: Text('玻璃', style: TextStyle(fontSize: 12)),
+                ),
+              ],
+              selected: {store.bottomBarStyle},
+              onSelectionChanged: (set) {
+                if (set.isNotEmpty) store.setBottomBarStyle(set.first);
+              },
+            ),
+          ),
+          Divider(
+            height: 1,
+            indent: 58,
+            endIndent: 16,
+            color: colorScheme.outlineVariant.withValues(alpha: 0.25),
+          ),
+          SwitchListTile(
+            shape: const RoundedRectangleBorder(
+              borderRadius: BorderRadius.vertical(bottom: Radius.circular(22)),
+            ),
+            activeThumbColor: colorScheme.primary,
+            secondary: Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: colorScheme.primary.withValues(alpha: 0.14),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(
+                Icons.play_circle_outline_rounded,
+                size: 20,
+                color: colorScheme.primary,
+              ),
+            ),
+            title: const Text(
+              '启动时自动续播上次歌曲',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
+            subtitle: Text(
+              '打开 SodaPulse 自动恢复上次队列',
+              style: TextStyle(
+                fontSize: 12,
+                color: colorScheme.onSurface.withValues(alpha: 0.6),
+              ),
+            ),
+            value: store.autoPlayOnLaunch,
+            onChanged: store.setAutoPlayOnLaunch,
+          ),
         ],
       ),
     );

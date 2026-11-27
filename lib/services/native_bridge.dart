@@ -376,6 +376,7 @@ class NativePlayerBridge extends ChangeNotifier {
     Track track, {
     ParsedLyric? parsedLyrics,
     Map<String, dynamic>? lyricPayload,
+    Map<String, String>? headers,
   }) async {
     _currentTrack = track;
     _currentLyrics = parsedLyrics;
@@ -391,11 +392,14 @@ class NativePlayerBridge extends ChangeNotifier {
           durationMs: track.durationMs,
         );
 
+    final effectiveHeaders = headers ?? track.headers;
     await _methodChannel.invokeMethod<void>(
       'loadAndPlay',
       <String, dynamic>{
         'track': track.toMap(),
         if (payload != null) 'lyricPayload': payload,
+        if (effectiveHeaders != null && effectiveHeaders.isNotEmpty)
+          'headers': effectiveHeaders,
       },
     );
   }
@@ -631,6 +635,98 @@ class NativePlayerBridge extends ChangeNotifier {
       return result['path']?.toString();
     }
     return null;
+  }
+
+  Future<Map<String, dynamic>> pluginLoad(
+    String id,
+    String script,
+    String type,
+  ) async {
+    final dynamic result = await _methodChannel.invokeMethod<dynamic>(
+      'pluginLoad',
+      <String, dynamic>{'id': id, 'script': script, 'type': type},
+    );
+    if (result is Map) return Map<String, dynamic>.from(result);
+    return const <String, dynamic>{'ok': false};
+  }
+
+  Future<bool> pluginUnload(String id) async {
+    final bool? result = await _methodChannel.invokeMethod<bool>(
+      'pluginUnload',
+      <String, dynamic>{'id': id},
+    );
+    return result ?? false;
+  }
+
+  Future<Map<String, dynamic>> pluginTest(String id) async {
+    final dynamic result = await _methodChannel.invokeMethod<dynamic>(
+      'pluginTest',
+      <String, dynamic>{'id': id},
+    );
+    if (result is Map) return Map<String, dynamic>.from(result);
+    return const <String, dynamic>{'ok': false};
+  }
+
+  Future<List<Track>> pluginSearch(
+    String pluginId,
+    String query, {
+    int page = 1,
+  }) async {
+    final dynamic result = await _methodChannel.invokeMethod<dynamic>(
+      'pluginSearch',
+      <String, dynamic>{'pluginId': pluginId, 'query': query, 'page': page},
+    );
+    if (result is! List) return const <Track>[];
+    return result
+        .whereType<Map<dynamic, dynamic>>()
+        .map((m) => Track.fromMap(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  Future<Map<String, dynamic>> pluginResolveUrl(
+    String pluginId,
+    String rawItemJson, {
+    String quality = 'standard',
+    String source = '',
+  }) async {
+    final dynamic result = await _methodChannel.invokeMethod<dynamic>(
+      'pluginResolveUrl',
+      <String, dynamic>{
+        'pluginId': pluginId,
+        'rawItemJson': rawItemJson,
+        'quality': quality,
+        'source': source,
+      },
+    );
+    if (result is Map) return Map<String, dynamic>.from(result);
+    return const <String, dynamic>{'ok': false};
+  }
+
+  Future<Map<String, dynamic>> pluginResolveLyric(
+    String pluginId,
+    String rawItemJson,
+  ) async {
+    final dynamic result = await _methodChannel.invokeMethod<dynamic>(
+      'pluginResolveLyric',
+      <String, dynamic>{'pluginId': pluginId, 'rawItemJson': rawItemJson},
+    );
+    if (result is Map) return Map<String, dynamic>.from(result);
+    return const <String, dynamic>{'ok': false};
+  }
+
+  Future<List<Track>> pluginImportSheet(
+    String pluginId,
+    String urlOrId,
+  ) async {
+    final dynamic result = await _methodChannel.invokeMethod<dynamic>(
+      'pluginImportSheet',
+      <String, dynamic>{'pluginId': pluginId, 'urlOrId': urlOrId},
+    );
+    if (result is! List) return const <Track>[];
+    return result
+        .whereType<Map<dynamic, dynamic>>()
+        .map((m) => Track.fromMap(Map<String, dynamic>.from(m)))
+        .toList();
   }
 
   @override

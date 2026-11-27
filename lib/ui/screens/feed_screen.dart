@@ -25,7 +25,10 @@ class _FeedScreenState extends State<FeedScreen> {
       builder: (context, _) {
         final track = widget.store.currentTrack;
         final hideNavBar = _tabIndex == 0 && widget.store.pureMode;
+        final isGlassBar = widget.store.bottomBarStyle == BottomBarStyle.glass;
         final showMiniPlayer = _tabIndex != 0 && track != null;
+        final startupToast = widget.store.startupPluginToast;
+        final bottomInset = MediaQuery.paddingOf(context).bottom;
 
         return Scaffold(
           extendBody: true,
@@ -49,7 +52,7 @@ class _FeedScreenState extends State<FeedScreen> {
                 Positioned(
                   left: 14,
                   right: 14,
-                  bottom: MediaQuery.of(context).padding.bottom + 92,
+                  bottom: bottomInset + (isGlassBar ? 86 : 92),
                   child: _MiniPlayerBar(
                     title: track.title,
                     artist: track.artist,
@@ -59,9 +62,63 @@ class _FeedScreenState extends State<FeedScreen> {
                     onNext: widget.store.next,
                   ),
                 ),
+              if (startupToast != null)
+                Positioned(
+                  right: 16,
+                  bottom: bottomInset + (hideNavBar ? 24 : 96),
+                  child: IgnorePointer(
+                    child: AnimatedOpacity(
+                      opacity: 1.0,
+                      duration: const Duration(milliseconds: 280),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 7,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF151C2C).withValues(alpha: 0.88),
+                          borderRadius: BorderRadius.circular(18),
+                          border: Border.all(
+                            color: widget.store.accentColor.withValues(alpha: 0.45),
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.extension_rounded,
+                              size: 14,
+                              color: widget.store.accentColor,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              startupToast,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              if (!hideNavBar && isGlassBar)
+                Positioned(
+                  left: 24,
+                  right: 24,
+                  bottom: bottomInset + 12,
+                  child: _GlassBottomBar(
+                    selectedIndex: _tabIndex,
+                    accent: widget.store.accentColor,
+                    onSelect: (index) => setState(() => _tabIndex = index),
+                  ),
+                ),
             ],
           ),
-          bottomNavigationBar: hideNavBar
+          bottomNavigationBar: (hideNavBar || isGlassBar)
               ? null
               : NavigationBar(
                   selectedIndex: _tabIndex,
@@ -85,6 +142,89 @@ class _FeedScreenState extends State<FeedScreen> {
                 ),
         );
       },
+    );
+  }
+}
+
+class _GlassBottomBar extends StatelessWidget {
+  const _GlassBottomBar({
+    required this.selectedIndex,
+    required this.accent,
+    required this.onSelect,
+  });
+
+  final int selectedIndex;
+  final Color accent;
+  final ValueChanged<int> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    const items = [
+      (icon: Icons.music_note_rounded, label: '听歌'),
+      (icon: Icons.explore_rounded, label: '发现'),
+      (icon: Icons.person_rounded, label: '我的'),
+    ];
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(28),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
+        child: Container(
+          height: 60,
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          decoration: BoxDecoration(
+            color: const Color(0xFF121826).withValues(alpha: 0.78),
+            borderRadius: BorderRadius.circular(28),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: 0.14),
+            ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: List.generate(items.length, (i) {
+              final selected = i == selectedIndex;
+              return Expanded(
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(22),
+                  onTap: () => onSelect(i),
+                  child: Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: selected
+                          ? accent.withValues(alpha: 0.22)
+                          : Colors.transparent,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          items[i].icon,
+                          size: 20,
+                          color: selected
+                              ? accent
+                              : Colors.white.withValues(alpha: 0.65),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          items[i].label,
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight:
+                                selected ? FontWeight.w700 : FontWeight.w500,
+                            color: selected
+                                ? Colors.white
+                                : Colors.white.withValues(alpha: 0.65),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            }),
+          ),
+        ),
+      ),
     );
   }
 }

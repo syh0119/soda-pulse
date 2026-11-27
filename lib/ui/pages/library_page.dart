@@ -1,5 +1,3 @@
-import 'dart:ui';
-
 import 'package:flutter/material.dart';
 import 'package:soda_pulse/services/native_bridge.dart';
 import 'package:soda_pulse/models/track.dart';

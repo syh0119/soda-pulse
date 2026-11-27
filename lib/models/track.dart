@@ -8,6 +8,10 @@ class Track {
   final String? filePath;
   final String? albumArtUri;
   final bool isDemo;
+  final String? pluginId;
+  final String? rawPluginData;
+  final String? sourcePlatform;
+  final Map<String, String>? headers;
 
   const Track({
     required this.id,
@@ -19,7 +23,13 @@ class Track {
     this.filePath,
     this.albumArtUri,
     this.isDemo = false,
+    this.pluginId,
+    this.rawPluginData,
+    this.sourcePlatform,
+    this.headers,
   });
+
+  bool get isOnlinePluginTrack => pluginId != null && pluginId!.isNotEmpty;
 
   factory Track.fromMap(Map<dynamic, dynamic> map) {
     final dynamic rawDuration = map['durationMs'];
@@ -46,6 +56,18 @@ class Track {
       parsedIsDemo = false;
     }
 
+    Map<String, String>? parsedHeaders;
+    final dynamic rawHeaders = map['headers'];
+    if (rawHeaders is Map) {
+      parsedHeaders = <String, String>{};
+      rawHeaders.forEach((k, v) {
+        if (k != null && v != null) {
+          parsedHeaders![k.toString()] = v.toString();
+        }
+      });
+      if (parsedHeaders.isEmpty) parsedHeaders = null;
+    }
+
     return Track(
       id: (map['id'] ?? '').toString(),
       title: (map['title'] ?? '').toString(),
@@ -56,6 +78,10 @@ class Track {
       filePath: map['filePath']?.toString(),
       albumArtUri: map['albumArtUri']?.toString(),
       isDemo: parsedIsDemo,
+      pluginId: map['pluginId']?.toString(),
+      rawPluginData: (map['rawPluginData'] ?? map['rawItemJson'])?.toString(),
+      sourcePlatform: map['sourcePlatform']?.toString(),
+      headers: parsedHeaders,
     );
   }
 
@@ -70,6 +96,10 @@ class Track {
       'filePath': filePath,
       'albumArtUri': albumArtUri,
       'isDemo': isDemo,
+      if (pluginId != null) 'pluginId': pluginId,
+      if (rawPluginData != null) 'rawPluginData': rawPluginData,
+      if (sourcePlatform != null) 'sourcePlatform': sourcePlatform,
+      if (headers != null && headers!.isNotEmpty) 'headers': headers,
     };
   }
 
@@ -83,6 +113,10 @@ class Track {
     String? filePath,
     String? albumArtUri,
     bool? isDemo,
+    String? pluginId,
+    String? rawPluginData,
+    String? sourcePlatform,
+    Map<String, String>? headers,
   }) {
     return Track(
       id: id ?? this.id,
@@ -94,6 +128,10 @@ class Track {
       filePath: filePath ?? this.filePath,
       albumArtUri: albumArtUri ?? this.albumArtUri,
       isDemo: isDemo ?? this.isDemo,
+      pluginId: pluginId ?? this.pluginId,
+      rawPluginData: rawPluginData ?? this.rawPluginData,
+      sourcePlatform: sourcePlatform ?? this.sourcePlatform,
+      headers: headers ?? this.headers,
     );
   }
 
@@ -109,7 +147,8 @@ class Track {
         other.uri == uri &&
         other.filePath == filePath &&
         other.albumArtUri == albumArtUri &&
-        other.isDemo == isDemo;
+        other.isDemo == isDemo &&
+        other.pluginId == pluginId;
   }
 
   @override
@@ -124,6 +163,7 @@ class Track {
       filePath,
       albumArtUri,
       isDemo,
+      pluginId,
     );
   }
 }

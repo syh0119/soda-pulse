@@ -32,3 +32,5 @@
 1. 将代码推送至 GitHub 仓库的 `main` 或 `master` 分支，系统将自动触发构建；也可在 GitHub 仓库页面进入 **Actions -> Build Android APK -> Run workflow** 手动触发。
 2. 工作流将依次执行：配置 Java 17、Flutter Stable、Gradle 8.10.2、生成 Gradle Wrapper、`flutter pub get`、`flutter analyze`、`flutter test` 与 `flutter build apk --release --target-platform android-arm64`。
 3. 构建完成后，在对应 Action 运行详情页底部的 **Artifacts** 区域下载 `soda_pulse-arm64-release-apk`，解压即可获取 `app-arm64-v8a-release.apk` 安装包。
+
+---

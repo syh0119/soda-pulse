@@ -46,5 +46,5 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.media3:media3-exoplayer:1.5.1")
     implementation("androidx.media3:media3-common:1.5.1")
-    implementation("com.github.HChenX:SuperLyricApi:5.0")
+    implementation("com.github.HChenX:SuperLyricApi:4.0")
 }

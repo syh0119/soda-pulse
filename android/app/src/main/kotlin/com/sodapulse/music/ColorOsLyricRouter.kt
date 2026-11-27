@@ -416,18 +416,24 @@ class ColorOsLyricRouter(context: Context? = null) {
     }
 
     private fun refreshSuperLyricStatusOnWorker() {
-        try {
-            val status = SuperLyric.status()
-            cachedStatusName = status.name
+        val available = try {
+            SuperLyric.isAvailable()
         } catch (t: Throwable) {
-            cachedStatusName = "UNAVAILABLE"
-            Log.w(TAG, "SuperLyric.status() error: ${t.message}")
+            Log.w(TAG, "SuperLyric.isAvailable() error: ${t.message}")
+            false
         }
-        try {
-            cachedServerApiVersion = SuperLyric.serverApiVersion()
+        val apiVer = try {
+            SuperLyric.serverApiVersion()
         } catch (t: Throwable) {
-            cachedServerApiVersion = -1
             Log.w(TAG, "SuperLyric.serverApiVersion() error: ${t.message}")
+            0
+        }
+        cachedServerApiVersion = apiVer
+        cachedStatusName = when {
+            !available -> "UNAVAILABLE"
+            apiVer >= 50 -> "V5"
+            apiVer >= 40 -> "V4"
+            else -> "LEGACY"
         }
     }
 
@@ -469,12 +475,12 @@ class ColorOsLyricRouter(context: Context? = null) {
 
         return try {
             val doc = Lyric(
-                id = id,
-                title = title,
-                artist = payload.artist,
-                album = payload.album,
-                duration = duration,
-                lines = builtLines,
+                id,
+                title,
+                payload.artist,
+                payload.album,
+                duration,
+                builtLines,
             )
             val publisher: Publisher = SuperLyric.publisher()
             val res = publisher.publish(doc)

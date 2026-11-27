@@ -35,10 +35,15 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import java.io.File
 import java.util.concurrent.Executors
 
@@ -95,6 +100,8 @@ class PlaybackService : Service() {
     private var currentFavorite: Boolean = false
     private var coverBitmap: Bitmap? = null
     private var lastLyricInfoJson: String? = null
+    @Volatile
+    private var currentTrackHeaders: Map<String, String> = emptyMap()
 
     private var queueTracks: List<QueueTrack> = emptyList()
     private var currentQueueIndex: Int = -1
@@ -102,6 +109,26 @@ class PlaybackService : Service() {
 
     private var isTicking = false
     private var lastPlaybackPushMs = 0L
+    private var fadeStep = 0
+    private val fadeInRunnable = object : Runnable {
+        override fun run() {
+            if (!::player.isInitialized || !player.isPlaying) return
+            fadeStep++
+            val targetVol = (fadeStep / 8f).coerceIn(0.05f, 1.0f)
+            player.volume = targetVol
+            if (fadeStep < 8) {
+                tickHandler.postDelayed(this, 30L)
+            }
+        }
+    }
+
+    private fun startFadeIn() {
+        tickHandler.removeCallbacks(fadeInRunnable)
+        if (!::player.isInitialized) return
+        fadeStep = 0
+        player.volume = 0.05f
+        tickHandler.postDelayed(fadeInRunnable, 30L)
+    }
 
     private val tickRunnable = object : Runnable {
         override fun run() {
@@ -233,6 +260,7 @@ class PlaybackService : Service() {
         }
     }
 
+    @OptIn(UnstableApi::class)
     override fun onCreate() {
         super.onCreate()
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -244,7 +272,7 @@ class PlaybackService : Service() {
             .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
             .build()
 
-        val renderersFactory = @OptIn(UnstableApi::class) object : DefaultRenderersFactory(this) {
+        val renderersFactory = object : DefaultRenderersFactory(this) {
             override fun buildAudioSink(
                 context: Context,
                 enableFloatOutput: Boolean,
@@ -256,7 +284,31 @@ class PlaybackService : Service() {
             }
         }
 
+        val httpFactory = DefaultHttpDataSource.Factory()
+            .setAllowCrossProtocolRedirects(true)
+            .setConnectTimeoutMs(10_000)
+            .setReadTimeoutMs(15_000)
+            .setUserAgent("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+
+        val dynamicHttpFactory = DataSource.Factory {
+            val ds = httpFactory.createDataSource()
+            val hdrs = currentTrackHeaders
+            if (hdrs.isNotEmpty()) {
+                for ((k, v) in hdrs) {
+                    if (k.isNotBlank() && v.isNotBlank()) {
+                        ds.setRequestProperty(k, v)
+                    }
+                }
+            }
+            ds
+        }
+
+        val mediaSourceFactory = DefaultMediaSourceFactory(
+            DefaultDataSource.Factory(this, dynamicHttpFactory)
+        )
+
         player = ExoPlayer.Builder(this, renderersFactory)
+            .setMediaSourceFactory(mediaSourceFactory)
             .setAudioAttributes(media3AudioAttributes, false)
             .build()
         player.addListener(playerListener)
@@ -372,6 +424,18 @@ class PlaybackService : Service() {
         val durationMs = (trackMap["durationMs"] as? Number)?.toLong() ?: 0L
         val coverUri = (trackMap["albumArtUri"] as? String)?.takeIf { it.isNotBlank() }
         val isFav = (trackMap["isFavorite"] as? Boolean) ?: false
+        val rawHeaders = (args["headers"] as? Map<*, *>) ?: (trackMap["headers"] as? Map<*, *>)
+        val parsedHeaders = mutableMapOf<String, String>()
+        if (rawHeaders != null) {
+            for ((k, v) in rawHeaders) {
+                val ks = k?.toString()?.trim()
+                val vs = v?.toString()?.trim()
+                if (!ks.isNullOrEmpty() && !vs.isNullOrEmpty()) {
+                    parsedHeaders[ks] = vs
+                }
+            }
+        }
+        currentTrackHeaders = parsedHeaders
 
         currentTrackId = id
         currentTitle = title
@@ -405,6 +469,7 @@ class PlaybackService : Service() {
             player.prepare()
             requestAudioFocus()
             player.play()
+            startFadeIn()
         }
 
         updateMediaMetadata(lyricInfoJson = null)

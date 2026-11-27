@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:soda_pulse/core/app_store.dart';
 import 'package:soda_pulse/core/daily_copy.dart';
+import 'package:soda_pulse/core/t2s_converter.dart';
 import 'package:soda_pulse/plugin/plugin_manager.dart';
 
 void main() {
@@ -85,6 +86,14 @@ module.exports = {
       expect(decoded.name, playlist.name);
       expect(decoded.trackIds, playlist.trackIds);
       expect(decoded.createdAtMs, playlist.createdAtMs);
+    });
+
+    test('T2SConverter normalizes Traditional Chinese song titles & artists', () {
+      expect(T2SConverter.convert('烏梅子醬'), '乌梅子酱');
+      expect(T2SConverter.convert('李榮浩'), '李荣浩');
+      expect(T2SConverter.convert('陳奕迅'), '陈奕迅');
+      expect(T2SConverter.convert('周杰倫'), '周杰伦');
+      expect(T2SConverter.normalize('  鄧紫棋 G.E.M. '), '邓紫棋 g.e.m.');
     });
   });
 }
