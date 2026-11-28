@@ -384,9 +384,9 @@ class PlaybackService : Service() {
             ds
         }
 
-        val mediaSourceFactory = DefaultMediaSourceFactory(
-            DefaultDataSource.Factory(this, dynamicHttpFactory)
-        )
+        val baseDataSourceFactory = DefaultDataSource.Factory(this, dynamicHttpFactory)
+        val alacAwareFactory = SodaAlacWavDataSource.Factory(this, baseDataSourceFactory)
+        val mediaSourceFactory = DefaultMediaSourceFactory(alacAwareFactory)
 
         player = ExoPlayer.Builder(this, renderersFactory)
             .setMediaSourceFactory(mediaSourceFactory)

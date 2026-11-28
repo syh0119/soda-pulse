@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:soda_pulse/core/app_store.dart';
 import 'package:soda_pulse/models/track.dart';
 import 'package:soda_pulse/services/online_music_catalog.dart';
+import 'package:soda_pulse/ui/pages/cache_and_download_pages.dart';
 import 'package:soda_pulse/ui/theme/soda_theme.dart';
 
 class OnlinePlaylistDetailPage extends StatefulWidget {
@@ -253,6 +254,27 @@ class _OnlinePlaylistDetailPageState extends State<OnlinePlaylistDetailPage> {
                     style: TextStyle(fontWeight: FontWeight.w600),
                   ),
                 ),
+              ),
+              const SizedBox(width: 10),
+              IconButton.outlined(
+                tooltip: '批量下载',
+                onPressed: tracks.isEmpty
+                    ? null
+                    : () => showBatchDownloadSheet(
+                          context,
+                          widget.store,
+                          tracks,
+                          title: '批量下载 · ${widget.title}',
+                        ),
+                style: IconButton.styleFrom(
+                  foregroundColor: SodaColors.cyan,
+                  side: BorderSide(color: SodaColors.cyan.withValues(alpha: 0.45)),
+                  padding: const EdgeInsets.all(12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                icon: const Icon(Icons.download_rounded),
               ),
             ],
           ),

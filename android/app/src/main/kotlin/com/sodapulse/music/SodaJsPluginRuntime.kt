@@ -219,7 +219,8 @@ object SodaJsPluginRuntime {
         val startMs = System.currentTimeMillis()
         val itemB64 = Base64.encodeToString(rawItemJson.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
         val fallbackQ = when (quality.lowercase()) {
-            "flac", "flac24bit", "24bit" -> "320k"
+            "flac24bit", "24bit" -> "flac"
+            "flac" -> "320k"
             "128k", "standard", "low" -> "320k"
             else -> "128k"
         }
@@ -1529,8 +1530,20 @@ object SodaJsPluginRuntime {
           if (typeof globalThis !== 'undefined') globalThis.lx = p.lx;
         }
         var src = source || item.source || (Object.keys(p.lxSources || {})[0]) || 'tx';
-        var qMap = { standard: '320k', high: '320k', lossless: 'flac', super: 'flac', low: '128k' };
+        var qMap = { standard: '320k', high: '320k', lossless: 'flac', super: 'flac', master: 'flac24bit', hires: 'flac24bit', low: '128k' };
         var mappedQ = qMap[q] || q;
+        var srcMeta = p.lxSources && p.lxSources[src];
+        if (srcMeta && Array.isArray(srcMeta.qualitys)) {
+          if ((mappedQ === 'flac24bit' || mappedQ === '24bit') && srcMeta.qualitys.indexOf(mappedQ) === -1) {
+            if (mappedQ === 'flac24bit' && srcMeta.qualitys.indexOf('24bit') !== -1) {
+              mappedQ = '24bit';
+            } else if (mappedQ === '24bit' && srcMeta.qualitys.indexOf('flac24bit') !== -1) {
+              mappedQ = 'flac24bit';
+            } else if (srcMeta.qualitys.indexOf('flac') !== -1) {
+              mappedQ = 'flac';
+            }
+          }
+        }
         var finalUrl = '';
         var finalHeaders = {};
         var lastErr = '';

@@ -5,6 +5,7 @@ import 'package:soda_pulse/core/app_store.dart';
 import 'package:soda_pulse/core/daily_copy.dart';
 import 'package:soda_pulse/core/t2s_converter.dart';
 import 'package:soda_pulse/plugin/plugin_manager.dart';
+import 'package:soda_pulse/services/media_storage_service.dart';
 import 'package:soda_pulse/services/native_bridge.dart';
 import 'package:soda_pulse/services/online_music_catalog.dart';
 import 'package:soda_pulse/ui/theme/soda_theme.dart';
@@ -360,15 +361,70 @@ module.exports = {
   });
 
   group('AudioQualityOptions', () {
-    test('defines 128k/320k/flac options and falls back to 320k', () {
-      expect(AudioQualityOptions.all, hasLength(3));
+    test('defines 128k/320k/flac/flac24bit options and falls back to 320k', () {
+      expect(AudioQualityOptions.all, hasLength(4));
       expect(AudioQualityOptions.byId('128k').label, '标准');
       expect(AudioQualityOptions.byId('128k').badge, 'STD');
       expect(AudioQualityOptions.byId('320k').label, '高品质');
       expect(AudioQualityOptions.byId('320k').badge, 'HQ');
       expect(AudioQualityOptions.byId('flac').label, '无损');
       expect(AudioQualityOptions.byId('flac').badge, 'SQ');
+      expect(AudioQualityOptions.byId('flac24bit').label, 'Hi-Res');
+      expect(AudioQualityOptions.byId('flac24bit').badge, 'HR');
       expect(AudioQualityOptions.byId('unknown').id, '320k');
+    });
+  });
+
+  group('MediaStorageService & DownloadTask', () {
+    test('formatBytes, sanitizeFileName, and extFromUrlOrQuality work reliably', () {
+      expect(MediaStorageService.formatBytes(0), '0 B');
+      expect(MediaStorageService.formatBytes(1536), '1.5 KB');
+      expect(MediaStorageService.formatBytes(5 * 1024 * 1024), '5.0 MB');
+      expect(
+        MediaStorageService.sanitizeFileName('Artist: Song? <Hi-Res>'),
+        'Artist_ Song_ _Hi-Res_',
+      );
+      expect(
+        MediaStorageService.extFromUrlOrQuality(
+          'https://cdn.example.com/audio/123.flac?auth=1',
+          'flac24bit',
+        ),
+        '.flac',
+      );
+      expect(
+        MediaStorageService.extFromUrlOrQuality(
+          'https://cdn.example.com/stream?id=1',
+          '320k',
+        ),
+        '.mp3',
+      );
+    });
+
+    test('DownloadTask serializes and restores cleanly', () {
+      final task = DownloadTask(
+        id: 't1',
+        trackId: 'wy_100',
+        title: '晴天',
+        artist: '周杰伦',
+        album: '叶惠美',
+        quality: 'flac24bit',
+        url: 'https://music.126.net/song.flac',
+        targetPath: '/music/song.flac',
+        lrcPath: '/music/song.lrc',
+        coverUrl: 'https://p1.music.126.net/cover.jpg',
+        status: DownloadStatus.downloading,
+        receivedBytes: 512,
+        totalBytes: 1024,
+        createdAt: DateTime.utc(2026, 11, 28),
+        headers: const {'Referer': 'https://music.163.com/'},
+      );
+      expect(task.progress, 0.5);
+      final restored = DownloadTask.fromMap(task.toMap());
+      expect(restored.id, 't1');
+      expect(restored.quality, 'flac24bit');
+      expect(restored.status, DownloadStatus.downloading);
+      expect(restored.headers['Referer'], 'https://music.163.com/');
+      expect(restored.lrcPath, '/music/song.lrc');
     });
   });
 }

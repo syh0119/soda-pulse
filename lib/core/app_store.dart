@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
@@ -9,6 +10,7 @@ import 'package:soda_pulse/lyrics/lyric_models.dart';
 import 'package:soda_pulse/lyrics/lyric_parser.dart';
 import 'package:soda_pulse/models/track.dart';
 import 'package:soda_pulse/plugin/plugin_manager.dart';
+import 'package:soda_pulse/services/media_storage_service.dart';
 import 'package:soda_pulse/services/native_bridge.dart';
 import 'package:soda_pulse/services/online_music_catalog.dart';
 
@@ -195,6 +197,13 @@ class AudioQualityOptions {
       subtitle: 'FLAC · 母带级细节',
       badge: 'SQ',
     ),
+    AudioQualityOption(
+      id: 'flac24bit',
+      label: 'Hi-Res',
+      title: 'Hi-Res 母带',
+      subtitle: '24bit/96kHz FLAC · 极臻母带',
+      badge: 'HR',
+    ),
   ];
 
   static AudioQualityOption byId(String id) {
@@ -361,10 +370,22 @@ class AppStore extends ChangeNotifier {
   static const int _urlTtlMs = 10 * 60 * 1000;
   final Map<String, int> _resolvedUrlAtMs = <String, int>{};
   final Set<String> _autoRetriedTrackIds = <String>{};
+  final MediaStorageService mediaStorage = MediaStorageService.instance;
+  bool _listenCacheEnabled = true;
+  int _listenCacheMaxMb = 500;
+  final Set<String> _failedTrackIds = <String>{};
   String? _playbackError;
   int _playRequestSeq = 0;
 
   String? get playbackError => _playbackError;
+  bool get listenCacheEnabled => _listenCacheEnabled;
+  int get listenCacheMaxMb => _listenCacheMaxMb;
+  Set<String> get failedTrackIds => Set<String>.unmodifiable(_failedTrackIds);
+  List<DownloadTask> get downloadTasks => mediaStorage.tasks;
+  String get activePluginId => activeLxPlugin?.id ?? primaryOnlinePlugin?.id ?? '';
+  String get audioQuality => _preferredQuality;
+  List<Track> get favorites => favoriteTracks;
+  List<UserPlaylist> get localPlaylists => playlists;
 
   static bool isSnapshotForActiveTrack(
     PlaybackSnapshot snap,
@@ -509,6 +530,20 @@ class AppStore extends ChangeNotifier {
 
   Future<void> init() async {
     await _loadPrefs();
+    try {
+      final paths = await _bridge.getAppStoragePaths();
+      final baseDir = paths['baseDir']?.trim().isNotEmpty == true
+          ? paths['baseDir']!.trim()
+          : '${Directory.systemTemp.path}/soda_pulse_storage';
+      final downloadDir = paths['downloadDir']?.trim().isNotEmpty == true
+          ? paths['downloadDir']!.trim()
+          : null;
+      await mediaStorage.init(baseDir: baseDir, downloadDir: downloadDir);
+      mediaStorage.removeListener(_onStorageChanged);
+      mediaStorage.addListener(_onStorageChanged);
+    } catch (_) {
+      // Keep app startup resilient even in headless test environments.
+    }
 
     await _stateSub?.cancel();
     _stateSub = _bridge.stateStream.listen((snap) {
@@ -753,11 +788,28 @@ class AppStore extends ChangeNotifier {
       _onlineTrackCache[track.id] = track;
     }
 
+    final String targetQuality = preferredQuality ?? _preferredQuality;
     String resolvedRawLyric = '';
     String resolvedTranslation = '';
     String resolvedRoma = '';
+    String? localCachedOrDownloadedPath;
+    if (track.isOnlinePluginTrack && !forceReResolve && mediaStorage.isInitialized) {
+      localCachedOrDownloadedPath = mediaStorage.getDownloadedAudioPath(track.id) ??
+          mediaStorage.getCachedAudioPath(track.id, targetQuality);
+      if (localCachedOrDownloadedPath != null) {
+        track = track.copyWith(
+          filePath: localCachedOrDownloadedPath,
+          uri: Uri.file(localCachedOrDownloadedPath).toString(),
+          headers: null,
+        );
+        _queue[index] = track;
+        _playbackError = null;
+      }
+    }
+
     final int nowMs = DateTime.now().millisecondsSinceEpoch;
-    final bool needsResolveUrl = track.isOnlinePluginTrack &&
+    final bool needsResolveUrl = localCachedOrDownloadedPath == null &&
+        track.isOnlinePluginTrack &&
         track.rawPluginData != null &&
         (forceReResolve ||
             track.uri.isEmpty ||
@@ -774,7 +826,7 @@ class AppStore extends ChangeNotifier {
         final urlRes = await _bridge.pluginResolveUrl(
           track.pluginId!,
           track.rawPluginData!,
-          quality: preferredQuality ?? _preferredQuality,
+          quality: targetQuality,
           source: track.sourcePlatform ?? '',
         );
         if (reqSeq != _playRequestSeq) return;
@@ -790,11 +842,24 @@ class AppStore extends ChangeNotifier {
         }
         if (resolvedUrl.isNotEmpty) {
           _resolvedUrlAtMs[track.id] = nowMs;
+          _failedTrackIds.remove(track.id);
           _playbackError = null;
           track = track.copyWith(uri: resolvedUrl, headers: resolvedHeaders);
           _queue[index] = track;
           _onlineTrackCache[track.id] = track;
+          if (_listenCacheEnabled && mediaStorage.isInitialized) {
+            unawaited(
+              mediaStorage.cacheAudioInBackground(
+                track.id,
+                targetQuality,
+                resolvedUrl,
+                headers: resolvedHeaders,
+                maxCacheMb: _listenCacheMaxMb,
+              ),
+            );
+          }
         } else {
+          _failedTrackIds.add(track.id);
           urlResolveError = (urlRes['error'] ?? '').toString().trim();
         }
       } else {
@@ -1691,6 +1756,8 @@ class AppStore extends ChangeNotifier {
       'eqPreGain': _eqPreGain,
       'preferredQuality': _preferredQuality,
       'loudnessNormEnabled': _loudnessNormEnabled,
+      'listenCacheEnabled': _listenCacheEnabled,
+      'listenCacheMaxMb': _listenCacheMaxMb,
     };
     return const JsonEncoder.withIndent('  ').convert(payload);
   }
@@ -1814,6 +1881,12 @@ class AppStore extends ChangeNotifier {
     final loudnessRaw = decoded['loudnessNormEnabled'];
     if (loudnessRaw is bool) {
       _loudnessNormEnabled = loudnessRaw;
+    }
+    if (decoded['listenCacheEnabled'] is bool) {
+      _listenCacheEnabled = decoded['listenCacheEnabled'] as bool;
+    }
+    if (decoded['listenCacheMaxMb'] is num) {
+      _listenCacheMaxMb = (decoded['listenCacheMaxMb'] as num).toInt().clamp(100, 8192);
     }
     if (eqGainsRaw is List && eqGainsRaw.length == 5) {
       _eqGains = eqGainsRaw
@@ -1964,6 +2037,12 @@ class AppStore extends ChangeNotifier {
       if (decoded['loudnessNormEnabled'] is bool) {
         _loudnessNormEnabled = decoded['loudnessNormEnabled'] as bool;
       }
+      if (decoded['listenCacheEnabled'] is bool) {
+        _listenCacheEnabled = decoded['listenCacheEnabled'] as bool;
+      }
+      if (decoded['listenCacheMaxMb'] is num) {
+        _listenCacheMaxMb = (decoded['listenCacheMaxMb'] as num).toInt().clamp(100, 8192);
+      }
       final gains = decoded['eqGains'];
       if (gains is List && gains.length == 5) {
         _eqGains = gains
@@ -2025,6 +2104,8 @@ class AppStore extends ChangeNotifier {
       'eqPreGain': _eqPreGain,
       'preferredQuality': _preferredQuality,
       'loudnessNormEnabled': _loudnessNormEnabled,
+      'listenCacheEnabled': _listenCacheEnabled,
+      'listenCacheMaxMb': _listenCacheMaxMb,
       'plugins': _plugins.map((p) => p.toJson()).toList(),
       'onlineTracks': _onlineTrackCache.values
           .take(300)
@@ -2034,6 +2115,210 @@ class AppStore extends ChangeNotifier {
     await _bridge.savePreferences(<String, dynamic>{
       _prefsKey: jsonEncode(data),
     });
+  }
+
+  void _onStorageChanged() {
+    notifyListeners();
+  }
+
+  Future<void> setListenCacheEnabled(bool enabled) async {
+    _listenCacheEnabled = enabled;
+    await _savePrefs();
+    notifyListeners();
+  }
+
+  Future<void> setListenCacheMaxMb(int maxMb) async {
+    _listenCacheMaxMb = maxMb.clamp(100, 8192);
+    await _savePrefs();
+    notifyListeners();
+  }
+
+  Future<CacheStats> computeCacheStats() async {
+    if (!mediaStorage.isInitialized) {
+      return const CacheStats(
+        listenCacheBytes: 0,
+        listenCacheCount: 0,
+        coverCacheBytes: 0,
+        downloadBytes: 0,
+        downloadCount: 0,
+        listenCacheDir: '',
+        downloadDir: '',
+      );
+    }
+    return mediaStorage.computeStats();
+  }
+
+  Future<void> clearListenCache() async {
+    if (!mediaStorage.isInitialized) return;
+    await mediaStorage.clearListenCache();
+    notifyListeners();
+  }
+
+  Future<void> clearCoverCache() async {
+    PaintingBinding.instance.imageCache.clear();
+    PaintingBinding.instance.imageCache.clearLiveImages();
+    _coverPathCache.clear();
+    notifyListeners();
+  }
+
+  Future<DownloadTask?> downloadTrack(Track track, {String? quality}) async {
+    if (!mediaStorage.isInitialized) return null;
+    final targetQuality = AudioQualityOptions.byId(quality ?? _preferredQuality).id;
+    String resolvedUrl = track.uri;
+    Map<String, String>? resolvedHeaders = track.headers;
+    String? lyricText;
+
+    if (track.isOnlinePluginTrack && track.rawPluginData != null) {
+      final pluginId = track.pluginId ?? activePluginId;
+      if (pluginId.isNotEmpty) {
+        final pluginIdx = _plugins.indexWhere((p) => p.id == pluginId);
+        if (pluginIdx >= 0) {
+          final p = _plugins[pluginIdx];
+          await _bridge.pluginLoad(p.id, p.script, p.type.name);
+        }
+        final urlRes = await _bridge.pluginResolveUrl(
+          pluginId,
+          track.rawPluginData!,
+          quality: targetQuality,
+          source: track.sourcePlatform ?? '',
+        );
+        final url = (urlRes['url'] ?? '').toString().trim();
+        if (url.isNotEmpty) {
+          resolvedUrl = url;
+          _failedTrackIds.remove(track.id);
+          if (urlRes['headers'] is Map) {
+            resolvedHeaders = <String, String>{};
+            (urlRes['headers'] as Map).forEach((k, v) {
+              if (k != null && v != null) {
+                resolvedHeaders![k.toString()] = v.toString();
+              }
+            });
+          }
+        } else {
+          _failedTrackIds.add(track.id);
+        }
+        try {
+          final lyricRes = await _bridge.pluginResolveLyric(pluginId, track.rawPluginData!);
+          lyricText = (lyricRes['raw'] ?? '').toString();
+        } catch (_) {}
+      }
+    }
+
+    if (resolvedUrl.trim().isEmpty ||
+        (!resolvedUrl.startsWith('http://') && !resolvedUrl.startsWith('https://'))) {
+      return null;
+    }
+
+    return mediaStorage.enqueueDownload(
+      trackId: track.id,
+      title: track.title,
+      artist: track.artist,
+      album: track.album,
+      quality: targetQuality,
+      url: resolvedUrl,
+      headers: resolvedHeaders,
+      lyricText: lyricText,
+      coverUrl: track.albumArtUri,
+    );
+  }
+
+  Future<int> batchDownloadTracks(List<Track> tracks, String quality) async {
+    var count = 0;
+    for (final track in tracks) {
+      final task = await downloadTrack(track, quality: quality);
+      if (task != null) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  Future<void> cancelDownload(String taskId) => mediaStorage.cancelDownload(taskId);
+
+  Future<void> retryDownload(String taskId) => mediaStorage.retryDownload(taskId);
+
+  Future<void> deleteDownload(String taskId, {bool deleteFile = true}) =>
+      mediaStorage.deleteDownload(taskId, deleteFile: deleteFile);
+
+  Future<void> clearCompletedDownloads() => mediaStorage.clearCompletedDownloads();
+
+  Future<void> playDownloadedTask(DownloadTask task) async {
+    final file = File(task.targetPath);
+    if (!file.existsSync()) return;
+    final offlineTrack = Track(
+      id: task.trackId,
+      title: task.title,
+      artist: task.artist,
+      album: task.album,
+      durationMs: 0,
+      uri: Uri.file(task.targetPath).toString(),
+      filePath: task.targetPath,
+      albumArtUri: task.coverUrl,
+    );
+    await playTrackList(<Track>[offlineTrack], 0);
+  }
+
+  Future<Map<String, dynamic>> probeAudioHardware() => _bridge.probeAudioHardware();
+
+  Future<bool> verifyTrackPlayable(Track track) async {
+    if (!track.isOnlinePluginTrack) {
+      if (track.filePath != null && File(track.filePath!).existsSync()) {
+        _failedTrackIds.remove(track.id);
+        return true;
+      }
+      return track.uri.isNotEmpty;
+    }
+    if (track.rawPluginData == null) {
+      _failedTrackIds.add(track.id);
+      notifyListeners();
+      return false;
+    }
+    final pluginId = track.pluginId ?? activePluginId;
+    if (pluginId.isEmpty) return false;
+    final pluginIdx = _plugins.indexWhere((p) => p.id == pluginId);
+    if (pluginIdx >= 0) {
+      final p = _plugins[pluginIdx];
+      await _bridge.pluginLoad(p.id, p.script, p.type.name);
+    }
+    final urlRes = await _bridge.pluginResolveUrl(
+      pluginId,
+      track.rawPluginData!,
+      quality: _preferredQuality,
+      source: track.sourcePlatform ?? '',
+    );
+    final ok = (urlRes['url'] ?? '').toString().trim().isNotEmpty;
+    if (ok) {
+      _failedTrackIds.remove(track.id);
+    } else {
+      _failedTrackIds.add(track.id);
+    }
+    notifyListeners();
+    return ok;
+  }
+
+  Future<void> replaceTrackEverywhere(Track oldTrack, Track newTrack) async {
+    _onlineTrackCache[newTrack.id] = newTrack;
+    if (_favoriteIds.remove(oldTrack.id)) {
+      _favoriteIds.add(newTrack.id);
+    }
+    for (var i = 0; i < _playlists.length; i++) {
+      final pl = _playlists[i];
+      if (pl.trackIds.contains(oldTrack.id)) {
+        final updatedIds = pl.trackIds
+            .map((id) => id == oldTrack.id ? newTrack.id : id)
+            .toList(growable: false);
+        _playlists[i] = pl.copyWith(trackIds: updatedIds);
+      }
+    }
+    for (var i = 0; i < _queue.length; i++) {
+      if (_queue[i].id == oldTrack.id) {
+        _queue[i] = newTrack;
+      }
+    }
+    _failedTrackIds.remove(oldTrack.id);
+    _failedTrackIds.remove(newTrack.id);
+    await _savePrefs();
+    notifyListeners();
   }
 
   T _enumByName<T extends Enum>(List<T> values, String? name, T fallback) {
@@ -2046,6 +2331,7 @@ class AppStore extends ChangeNotifier {
 
   @override
   void dispose() {
+    mediaStorage.removeListener(_onStorageChanged);
     _ticker?.cancel();
     _toastTimer?.cancel();
     _stateSub?.cancel();

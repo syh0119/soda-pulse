@@ -8,6 +8,13 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
+import android.media.AudioFormat
+import android.media.AudioManager
+import android.media.AudioTrack
+import android.media.audiofx.Equalizer
+import android.media.audiofx.LoudnessEnhancer
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
@@ -342,6 +349,29 @@ class MainActivity : FlutterActivity() {
                 withPlaybackService(startForeground = false) { service ->
                     service.setFavorite(favorite)
                     result.success(true)
+                }
+            }
+
+            "getAppStoragePaths" -> {
+                val baseDir = (getExternalFilesDir(null) ?: filesDir).absolutePath
+                val downloadDir = File(
+                    getExternalFilesDir(Environment.DIRECTORY_MUSIC) ?: filesDir,
+                    "SodaPulseDownloads"
+                ).apply { mkdirs() }.absolutePath
+                val cacheDirPath = (externalCacheDir ?: cacheDir).absolutePath
+                result.success(
+                    mapOf(
+                        "baseDir" to baseDir,
+                        "downloadDir" to downloadDir,
+                        "cacheDir" to cacheDirPath
+                    )
+                )
+            }
+
+            "probeAudioHardware" -> {
+                executor.execute {
+                    val info = probeAudioHardwareInfo()
+                    mainHandler.post { result.success(info) }
                 }
             }
 
@@ -710,5 +740,148 @@ class MainActivity : FlutterActivity() {
         playbackService = null
         executor.shutdownNow()
         super.onDestroy()
+    }
+
+    private fun audioDeviceTypeLabel(type: Int): String {
+        return when (type) {
+            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "扬声器"
+            AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "听筒"
+            AudioDeviceInfo.TYPE_WIRED_HEADSET -> "有线耳机 (带麦)"
+            AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "有线耳机"
+            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "蓝牙音频 (A2DP)"
+            AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "蓝牙通话 (SCO)"
+            AudioDeviceInfo.TYPE_USB_DEVICE -> "USB 音频设备"
+            AudioDeviceInfo.TYPE_USB_HEADSET -> "USB-C 耳机/DAC"
+            AudioDeviceInfo.TYPE_HDMI -> "HDMI 输出"
+            AudioDeviceInfo.TYPE_LINE_ANALOG -> "模拟线路输出"
+            AudioDeviceInfo.TYPE_LINE_DIGITAL -> "数字线路输出"
+            else -> if (Build.VERSION.SDK_INT >= 31 && type == AudioDeviceInfo.TYPE_BLE_HEADSET) {
+                "LE Audio 蓝牙耳机"
+            } else {
+                "音频设备 ($type)"
+            }
+        }
+    }
+
+    private fun probeAudioHardwareInfo(): Map<String, Any?> {
+        val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        val outputDevices = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && am != null) {
+            am.getDevices(AudioManager.GET_DEVICES_OUTPUTS).map { dev ->
+                val typeName = audioDeviceTypeLabel(dev.type)
+                val productName = dev.productName?.toString()?.trim().orEmpty()
+                val displayName = if (productName.isNotEmpty() && !productName.equals(Build.MODEL, ignoreCase = true)) {
+                    "$productName ($typeName)"
+                } else {
+                    typeName
+                }
+                mapOf(
+                    "id" to dev.id,
+                    "name" to displayName,
+                    "type" to dev.type,
+                    "typeName" to typeName,
+                    "sampleRates" to dev.sampleRates.toList(),
+                    "channelCounts" to dev.channelCounts.toList(),
+                    "isSink" to dev.isSink
+                )
+            }
+        } else {
+            emptyList()
+        }
+
+        var eqSupported = false
+        var eqBands = 0
+        var eqRange = listOf<Int>()
+        var eqCenterFreqsHz = listOf<Int>()
+        var loudnessSupported = false
+        var probeSessionId = 0
+        var probeError: String? = null
+
+        var track: AudioTrack? = null
+        var eq: Equalizer? = null
+        var le: LoudnessEnhancer? = null
+        try {
+            val sr = 44100
+            val minBuf = AudioTrack.getMinBufferSize(
+                sr,
+                AudioFormat.CHANNEL_OUT_STEREO,
+                AudioFormat.ENCODING_PCM_16BIT
+            ).coerceAtLeast(1024)
+            track = AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build()
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setSampleRate(sr)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .build()
+                )
+                .setBufferSizeInBytes(minBuf)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .build()
+            probeSessionId = track.audioSessionId
+            try {
+                track.play()
+                val silence = ByteArray(minBuf.coerceAtMost(2048))
+                track.write(silence, 0, silence.size)
+            } catch (_: Throwable) {
+            }
+
+            try {
+                eq = Equalizer(0, probeSessionId)
+                eqSupported = true
+                eqBands = eq.numberOfBands.toInt()
+                eqRange = eq.bandLevelRange.map { it.toInt() }
+                eqCenterFreqsHz = (0 until eqBands).map { b ->
+                    eq.getCenterFreq(b.toShort()) / 1000
+                }
+            } catch (e: Throwable) {
+                eqSupported = false
+                probeError = e.message
+            }
+
+            try {
+                le = LoudnessEnhancer(probeSessionId)
+                loudnessSupported = true
+            } catch (e: Throwable) {
+                loudnessSupported = false
+                if (probeError == null) probeError = e.message
+            }
+        } catch (e: Throwable) {
+            probeError = e.message
+        } finally {
+            try { le?.release() } catch (_: Throwable) {}
+            try { eq?.release() } catch (_: Throwable) {}
+            try { track?.stop() } catch (_: Throwable) {}
+            try { track?.release() } catch (_: Throwable) {}
+        }
+
+        val preferredDevice = outputDevices.firstOrNull {
+            val t = it["type"] as? Int ?: 0
+            t == AudioDeviceInfo.TYPE_USB_HEADSET ||
+                t == AudioDeviceInfo.TYPE_USB_DEVICE ||
+                t == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                t == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                t == AudioDeviceInfo.TYPE_WIRED_HEADPHONES
+        } ?: outputDevices.firstOrNull()
+
+        return mapOf(
+            "devices" to outputDevices,
+            "activeDeviceName" to (preferredDevice?.get("name") ?: "系统默认输出"),
+            "activeDeviceType" to (preferredDevice?.get("typeName") ?: "默认"),
+            "equalizerSupported" to eqSupported,
+            "equalizerBands" to eqBands,
+            "equalizerRangeMb" to eqRange,
+            "centerFreqsHz" to eqCenterFreqsHz,
+            "loudnessEnhancerSupported" to loudnessSupported,
+            "probeSessionId" to probeSessionId,
+            "probeError" to probeError,
+            "alacDecoderSupported" to true,
+            "alacDecoderEngine" to "SodaPulse Pure-Kotlin ALAC (16/24-bit · 最高 192kHz)"
+        )
     }
 }

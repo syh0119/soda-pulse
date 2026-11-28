@@ -3,11 +3,12 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:soda_pulse/core/app_store.dart';
+import 'package:soda_pulse/ui/pages/audio_output_page.dart';
+import 'package:soda_pulse/ui/pages/cache_and_download_pages.dart';
 import 'package:soda_pulse/ui/pages/drive_page.dart';
-import 'package:soda_pulse/ui/pages/sub_pages.dart';
-
+import 'package:soda_pulse/ui/pages/gray_songs_page.dart';
 import 'package:soda_pulse/ui/pages/island_settings_page.dart';
-
+import 'package:soda_pulse/ui/pages/sub_pages.dart';
 import 'package:soda_pulse/ui/sheets/player_sheets.dart';
 
 class MinePage extends StatelessWidget {
@@ -680,6 +681,58 @@ class MinePage extends StatelessWidget {
             title: '皮肤与布局',
             trailingText: '播放器外观',
             onTap: () => showSkinAndLayoutSheet(context, store),
+          ),
+          _ToolRow(
+            icon: Icons.download_for_offline_rounded,
+            badgeBg: const Color(0xFF172722),
+            badgeFg: const Color(0xFF2FE08B),
+            title: '下载管理',
+            trailingText: '${store.downloadTasks.length} 个任务',
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => DownloadManagePage(store: store),
+              ),
+            ),
+          ),
+          _ToolRow(
+            icon: Icons.storage_rounded,
+            badgeBg: const Color(0xFF1B2720),
+            badgeFg: const Color(0xFF9DF871),
+            title: '边听边存与缓存',
+            trailingText: store.listenCacheEnabled
+                ? '上限 ${store.listenCacheMaxMb} MB'
+                : '已关闭',
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => CacheManagePage(store: store),
+              ),
+            ),
+          ),
+          _ToolRow(
+            icon: Icons.speaker_group_rounded,
+            badgeBg: const Color(0xFF17232E),
+            badgeFg: const Color(0xFF38BDF8),
+            title: '音频输出与硬件探测',
+            trailingText: '设备 / SfxProbe',
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => AudioOutputPage(store: store),
+              ),
+            ),
+          ),
+          _ToolRow(
+            icon: Icons.radar_rounded,
+            badgeBg: const Color(0xFF2A1D24),
+            badgeFg: const Color(0xFFFF6B8B),
+            title: '灰歌扫描与一键换源',
+            trailingText: store.failedTrackIds.isNotEmpty
+                ? '${store.failedTrackIds.length} 首异常'
+                : '检测与替换',
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => GraySongsPage(store: store),
+              ),
+            ),
           ),
           _ToolRow(
             icon: Icons.backup_rounded,

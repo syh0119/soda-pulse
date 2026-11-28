@@ -606,6 +606,21 @@ class NativePlayerBridge extends ChangeNotifier {
     );
   }
 
+  Future<Map<String, String>> getAppStoragePaths() async {
+    final res = await _methodChannel.invokeMapMethod<String, dynamic>(
+      'getAppStoragePaths',
+    );
+    if (res == null) return const <String, String>{};
+    return res.map((k, v) => MapEntry(k, (v ?? '').toString()));
+  }
+
+  Future<Map<String, dynamic>> probeAudioHardware() async {
+    final res = await _methodChannel.invokeMapMethod<String, dynamic>(
+      'probeAudioHardware',
+    );
+    return res ?? const <String, dynamic>{};
+  }
+
   Future<Map<String, dynamic>> getCoverArtInfo(String? uri) async {
     if (uri == null || uri.isEmpty) {
       return const <String, dynamic>{};

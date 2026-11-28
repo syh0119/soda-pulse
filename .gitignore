@@ -9,6 +9,7 @@ build/
 
 # Android / Gradle
 android/local.properties
+android/key.properties
 android/.gradle/
 android/.kotlin/
 android/app/debug/

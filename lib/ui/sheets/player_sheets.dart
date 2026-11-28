@@ -1391,6 +1391,22 @@ Future<void> showTrackOptionsSheet(
               },
             ),
             ListTile(
+              leading: const Icon(Icons.download_rounded, color: Colors.white),
+              title: const Text('下载歌曲', style: TextStyle(color: Colors.white)),
+              onTap: () async {
+                Navigator.of(sheetContext).pop();
+                final messenger = ScaffoldMessenger.of(context);
+                final task = await store.downloadTrack(track);
+                messenger.showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      task != null ? '已加入下载队列: ${track.title}' : '无法下载该曲目（缺少有效音源地址）',
+                    ),
+                  ),
+                );
+              },
+            ),
+            ListTile(
               leading: const Icon(Icons.share_rounded, color: Colors.white),
               title: const Text('分享歌曲', style: TextStyle(color: Colors.white)),
               onTap: () {

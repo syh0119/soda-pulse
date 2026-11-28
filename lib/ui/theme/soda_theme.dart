@@ -3,6 +3,19 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:soda_pulse/models/track.dart';
 
+class SodaColors {
+  const SodaColors._();
+
+  static const Color background = Color(0xFF0A0D0E);
+  static const Color surface = Color(0xFF13171A);
+  static const Color surfaceElevated = Color(0xFF181D20);
+  static const Color cyan = Color(0xFF2FE08B);
+  static const Color lime = Color(0xFF9DF871);
+  static const Color textPrimary = Colors.white;
+  static const Color textSecondary = Color(0xFF94A3B8);
+  static const Color border = Color(0x14FFFFFF);
+}
+
 class SodaTheme {
   static const Color bgNight = Color(0xFF0A0D0E);
   static const Color bgDeep = bgNight;
