@@ -1,20 +1,21 @@
 $ErrorActionPreference = 'Stop'
 
-$env:JAVA_HOME = 'F:\gemini\toolchains\jdk21\jdk-21.0.13.1+2'
-$env:ANDROID_HOME = 'F:\gemini\toolchains\android-sdk'
-$env:ANDROID_SDK_ROOT = 'F:\gemini\toolchains\android-sdk'
+$env:JAVA_HOME = 'D:\WorkBuddy\_tools\jdk21\jdk-21.0.13.1+2'
+$env:ANDROID_HOME = 'D:\WorkBuddy\_tools\android-sdk'
+$env:ANDROID_SDK_ROOT = 'D:\WorkBuddy\_tools\android-sdk'
 $env:PUB_HOSTED_URL = 'https://pub.flutter-io.cn'
 $env:FLUTTER_STORAGE_BASE_URL = 'https://storage.flutter-io.cn'
-$env:PUB_CACHE = 'F:\gemini\toolchains\pub-cache'
-$env:GRADLE_USER_HOME = 'F:\gemini\toolchains\gradle-home'
+$env:PUB_CACHE = 'D:\WorkBuddy\_tools\flutter-pub-cache'
+$env:GRADLE_USER_HOME = 'D:\WorkBuddy\_tools\gradle-home'
 
 $env:PATH = (
-    'F:\gemini\toolchains\jdk21\jdk-21.0.13.1+2\bin;' +
-    'F:\gemini\toolchains\mingit\cmd;' +
-    'F:\gemini\toolchains\flutter\bin;' +
-    'F:\gemini\toolchains\gradle\gradle-9.5.0\bin;' +
-    'F:\gemini\toolchains\android-sdk\cmdline-tools\latest\bin;' +
-    'F:\gemini\toolchains\android-sdk\platform-tools;' +
+    'D:\WorkBuddy\_tools\jdk21\jdk-21.0.13.1+2\bin;' +
+    'D:\WorkBuddy\_tools\mingit\cmd;' +
+    'D:\WorkBuddy\_tools\flutter\bin;' +
+    'D:\WorkBuddy\_tools\gradle-9.8.0\bin;' +
+    'D:\WorkBuddy\_tools\android-sdk\cmdline-tools\latest\bin;' +
+    'D:\WorkBuddy\_tools\platform-tools;' +
+    'D:\WorkBuddy\_tools\android-sdk\platform-tools;' +
     $env:PATH
 )
 

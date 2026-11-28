@@ -20,3 +20,6 @@
 -keepclassmembers class com.sodapulse.music.SodaJsPluginRuntime$NativeBridge {
     @android.webkit.JavascriptInterface <methods>;
 }
+
+# ZXing QR core
+-dontwarn com.google.zxing.**

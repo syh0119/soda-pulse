@@ -47,4 +47,5 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.5.1")
     implementation("androidx.media3:media3-common:1.5.1")
     implementation("com.github.HChenX:SuperLyricApi:4.0")
+    implementation("com.google.zxing:core:3.5.3")
 }

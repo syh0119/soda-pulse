@@ -5,6 +5,7 @@ import 'package:soda_pulse/core/app_store.dart';
 import 'package:soda_pulse/ui/pages/drive_page.dart';
 import 'package:soda_pulse/core/daily_copy.dart';
 import 'package:soda_pulse/models/track.dart';
+import 'package:soda_pulse/ui/theme/soda_theme.dart';
 
 const Color _sheetBg = Color(0xFF121826);
 
@@ -124,6 +125,14 @@ Future<void> showQueueSheet(BuildContext context, AppStore store) {
                       itemBuilder: (itemContext, index) {
                         final track = queue[index];
                         final isCurrent = currentId == track.id;
+                        final localCoverPath = store.coverPathFor(track);
+                        if (!track.isOnlinePluginTrack &&
+                            localCoverPath == null &&
+                            (track.albumArtUri?.isNotEmpty ?? false)) {
+                          WidgetsBinding.instance.addPostFrameCallback(
+                            (_) => store.ensureCoverLoaded(track),
+                          );
+                        }
                         return Container(
                           margin: const EdgeInsets.symmetric(vertical: 2),
                           decoration: BoxDecoration(
@@ -136,13 +145,33 @@ Future<void> showQueueSheet(BuildContext context, AppStore store) {
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(14),
                             ),
-                            leading: Icon(
-                              isCurrent
-                                  ? Icons.equalizer_rounded
-                                  : Icons.music_note_rounded,
-                              color: isCurrent
-                                  ? accent
-                                  : Colors.white.withValues(alpha: 0.55),
+                            leading: SizedBox(
+                              width: 44,
+                              height: 44,
+                              child: Stack(
+                                fit: StackFit.expand,
+                                children: [
+                                  CoverArtWidget(
+                                    track: track,
+                                    localPath: localCoverPath,
+                                    accentColor: accent,
+                                    size: 44,
+                                    borderRadius: 10,
+                                  ),
+                                  if (isCurrent)
+                                    ClipRRect(
+                                      borderRadius: BorderRadius.circular(10),
+                                      child: ColoredBox(
+                                        color: Colors.black.withValues(alpha: 0.45),
+                                        child: Icon(
+                                          Icons.equalizer_rounded,
+                                          color: accent,
+                                          size: 22,
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
                             ),
                             title: Text(
                               track.title,
@@ -185,6 +214,145 @@ Future<void> showQueueSheet(BuildContext context, AppStore store) {
   );
 }
 
+Future<void> showAudioQualitySheet(BuildContext context, AppStore store) {
+  return _showSodaSheet<void>(
+    context: context,
+    builder: (sheetContext) {
+      final accent = _accentOf(sheetContext);
+      return ListenableBuilder(
+        listenable: store,
+        builder: (ctx, child) {
+          final currentQuality = store.preferredQuality;
+          return SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 22),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _sheetHandle(),
+                  _sheetHeader('切换音质 · 实时生效'),
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 14),
+                    child: Text(
+                      '支持 128k / 320k / FLAC，切换后在线曲目将自动重新解析',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.58),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                  ...AudioQualityOptions.all.map((option) {
+                    final selected = option.id == currentQuality;
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Material(
+                        color: Colors.transparent,
+                        borderRadius: BorderRadius.circular(16),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(16),
+                          onTap: () {
+                            store.setPreferredQuality(option.id);
+                            Navigator.of(sheetContext).pop();
+                            ScaffoldMessenger.of(context)
+                              ..hideCurrentSnackBar()
+                              ..showSnackBar(
+                                SnackBar(
+                                  content: Text('已切换至${option.title}'),
+                                  behavior: SnackBarBehavior.floating,
+                                ),
+                              );
+                          },
+                          child: Ink(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 14,
+                              vertical: 14,
+                            ),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(16),
+                              color: selected
+                                  ? accent.withValues(alpha: 0.14)
+                                  : Colors.white.withValues(alpha: 0.06),
+                              border: Border.all(
+                                color: selected
+                                    ? accent.withValues(alpha: 0.6)
+                                    : Colors.white.withValues(alpha: 0.1),
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Container(
+                                  width: 44,
+                                  height: 28,
+                                  alignment: Alignment.center,
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(8),
+                                    color: selected
+                                        ? accent.withValues(alpha: 0.22)
+                                        : Colors.white.withValues(alpha: 0.1),
+                                    border: Border.all(
+                                      color: selected
+                                          ? accent.withValues(alpha: 0.55)
+                                          : Colors.white.withValues(alpha: 0.12),
+                                    ),
+                                  ),
+                                  child: Text(
+                                    option.badge,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w800,
+                                      color: selected ? accent : Colors.white70,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        option.title,
+                                        style: TextStyle(
+                                          color: selected ? accent : Colors.white,
+                                          fontSize: 15,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        option.subtitle,
+                                        style: TextStyle(
+                                          color: Colors.white.withValues(alpha: 0.55),
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                if (selected)
+                                  Icon(
+                                    Icons.check_circle_rounded,
+                                    color: accent,
+                                    size: 22,
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
+                ],
+              ),
+            ),
+          );
+        },
+      );
+    },
+  );
+}
+
 Future<void> showSoundEffectSheet(BuildContext context, AppStore store) {
   const bandLabels = ['60Hz', '230Hz', '910Hz', '3.6kHz', '14kHz'];
   return _showSodaSheet<void>(
@@ -214,6 +382,80 @@ Future<void> showSoundEffectSheet(BuildContext context, AppStore store) {
                       style: TextStyle(
                         color: Colors.white.withValues(alpha: 0.55),
                         fontSize: 12,
+                      ),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 14),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 12,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.06),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.1),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Row(
+                                  children: [
+                                    const Text(
+                                      '响度平衡',
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 14.5,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 6,
+                                        vertical: 2,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: accent.withValues(alpha: 0.2),
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      child: Text(
+                                        '-14 LUFS',
+                                        style: TextStyle(
+                                          color: accent,
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 3),
+                                Text(
+                                  '自动拉齐不同音源与歌曲的音量差 · 防爆音限幅',
+                                  style: TextStyle(
+                                    color: Colors.white.withValues(alpha: 0.55),
+                                    fontSize: 11.5,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Switch(
+                            value: store.loudnessNormEnabled,
+                            onChanged: store.setLoudnessNormEnabled,
+                            activeThumbColor: accent,
+                            activeTrackColor: accent.withValues(alpha: 0.42),
+                          ),
+                        ],
                       ),
                     ),
                   ),
@@ -1644,7 +1886,7 @@ Future<void> showMoreRoamSheet(
                         GestureDetector(
                           onTap: () {
                             Navigator.of(sheetContext).pop();
-                            showSoundEffectSheet(context, store);
+                            showAudioQualitySheet(context, store);
                           },
                           child: Container(
                             padding: const EdgeInsets.symmetric(
@@ -1659,9 +1901,9 @@ Future<void> showMoreRoamSheet(
                                 width: 1.1,
                               ),
                             ),
-                            child: const Text(
-                              '高品质',
-                              style: TextStyle(
+                            child: Text(
+                              store.preferredQualityLabel,
+                              style: const TextStyle(
                                 fontSize: 12,
                                 fontWeight: FontWeight.w700,
                                 color: Color(0xFF2FE08B),

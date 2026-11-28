@@ -961,3 +961,145 @@ class KaraokeSingleLineSweep extends StatelessWidget {
     );
   }
 }
+
+class RollingPreviewLyrics extends StatelessWidget {
+  const RollingPreviewLyrics({
+    super.key,
+    required this.lines,
+    required this.activeIndex,
+    required this.positionMs,
+    required this.accentColor,
+    this.visibleLines = 5,
+    this.scale = 1.0,
+  });
+
+  final List<LyricLine> lines;
+  final int activeIndex;
+  final int positionMs;
+  final Color accentColor;
+  final int visibleLines;
+  final double scale;
+
+  @override
+  Widget build(BuildContext context) {
+    if (lines.isEmpty || activeIndex < 0) {
+      return const SizedBox.shrink();
+    }
+
+    final double inactiveRowH = 22.0 * scale;
+    final double activeRowH = 29.0 * scale;
+    final int centerSlot = visibleLines ~/ 2;
+    final double viewportH = (visibleLines - 1) * inactiveRowH + activeRowH;
+
+    final int startIdx =
+        (activeIndex - centerSlot - 1).clamp(0, lines.length - 1);
+    final int endIdx =
+        (activeIndex + centerSlot + 1).clamp(0, lines.length - 1);
+
+    return ClipRect(
+      child: ShaderMask(
+        blendMode: BlendMode.dstIn,
+        shaderCallback: (Rect bounds) {
+          return const LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            stops: <double>[0.0, 0.14, 0.86, 1.0],
+            colors: <Color>[
+              Colors.transparent,
+              Colors.white,
+              Colors.white,
+              Colors.transparent,
+            ],
+          ).createShader(bounds);
+        },
+        child: SizedBox(
+          width: double.infinity,
+          height: viewportH,
+          child: Stack(
+            children: <Widget>[
+              for (int idx = startIdx; idx <= endIdx; idx++)
+                _buildRow(
+                  line: lines[idx],
+                  idx: idx,
+                  inactiveRowH: inactiveRowH,
+                  activeRowH: activeRowH,
+                  centerSlot: centerSlot,
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRow({
+    required LyricLine line,
+    required int idx,
+    required double inactiveRowH,
+    required double activeRowH,
+    required int centerSlot,
+  }) {
+    final int rel = idx - activeIndex;
+    final double rowHeight = rel == 0 ? activeRowH : inactiveRowH;
+    final double rowTop = rel == 0
+        ? centerSlot * inactiveRowH
+        : (rel < 0
+            ? (centerSlot + rel) * inactiveRowH
+            : centerSlot * inactiveRowH +
+                activeRowH +
+                (rel - 1) * inactiveRowH);
+    final double targetOpacity = rel.abs() > centerSlot
+        ? 0.0
+        : (rel == 0 ? 1.0 : (rel.abs() == 1 ? 0.56 : 0.42));
+
+    final String trimmed = line.text.trim();
+    final Widget content;
+    if (trimmed.isEmpty) {
+      content = const SizedBox.shrink();
+    } else if (rel == 0) {
+      content = KaraokeSingleLineSweep(
+        line: line,
+        positionMs: positionMs,
+        style: TextStyle(
+          fontSize: 17.5 * scale,
+          fontWeight: FontWeight.w700,
+          height: 1.28,
+        ),
+        activeColor: Colors.white,
+        inactiveColor: Colors.white.withValues(alpha: 0.44),
+        glowColor: accentColor.withValues(alpha: 0.45),
+      );
+    } else {
+      content = Text(
+        trimmed,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          fontSize: 13.5 * scale,
+          fontWeight: FontWeight.w400,
+          color: Colors.white,
+          height: 1.24,
+        ),
+      );
+    }
+
+    return AnimatedPositioned(
+      key: ValueKey<int>(idx),
+      duration: const Duration(milliseconds: 380),
+      curve: Curves.easeOutCubic,
+      left: 0,
+      right: 0,
+      top: rowTop,
+      height: rowHeight,
+      child: AnimatedOpacity(
+        duration: const Duration(milliseconds: 340),
+        curve: Curves.easeOutCubic,
+        opacity: targetOpacity,
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: content,
+        ),
+      ),
+    );
+  }
+}

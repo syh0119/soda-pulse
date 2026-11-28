@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:soda_pulse/core/app_store.dart';
 import 'package:soda_pulse/models/track.dart';
 import 'package:soda_pulse/plugin/plugin_manager.dart';
+import 'package:soda_pulse/ui/pages/qr_import_page.dart';
 import 'package:soda_pulse/ui/sheets/player_sheets.dart';
 import 'package:soda_pulse/ui/theme/soda_theme.dart';
 
@@ -394,19 +395,20 @@ class HistoryPage extends StatelessWidget {
             itemCount: history.length,
             itemBuilder: (context, index) {
               final entry = history[index];
-              final track = store.library.firstWhere(
-                (t) => t.id == entry.trackId,
-                orElse: () => Track(
-                  id: entry.trackId,
-                  title: entry.title,
-                  artist: entry.artist,
-                  album: '最近播放',
-                  durationMs: 0,
-                  uri: '',
-                ),
-              );
+              final track = store.trackById(entry.trackId) ??
+                  Track(
+                    id: entry.trackId,
+                    title: entry.title,
+                    artist: entry.artist,
+                    album: '最近播放',
+                    durationMs: 0,
+                    uri: '',
+                  );
+              final localCoverPath = store.coverPathFor(track);
+              _scheduleCoverLoadIfNeeded(store, track, localCoverPath);
               return _StandardTrackTile(
                 track: track,
+                localCoverPath: localCoverPath,
                 isPlaying: store.currentTrack?.id == track.id,
                 onTap: () {
                   store.playTrack(track);
@@ -485,8 +487,11 @@ class FavoriteTracksPage extends StatelessWidget {
                   itemCount: favorites.length,
                   itemBuilder: (context, index) {
                     final track = favorites[index];
+                    final localCoverPath = store.coverPathFor(track);
+                    _scheduleCoverLoadIfNeeded(store, track, localCoverPath);
                     return _StandardTrackTile(
                       track: track,
+                      localCoverPath: localCoverPath,
                       isPlaying: store.currentTrack?.id == track.id,
                       onTap: () {
                         store.playTrack(track, queue: favorites);
@@ -626,8 +631,16 @@ class _LocalMusicPageState extends State<LocalMusicPage> {
                         itemCount: filtered.length,
                         itemBuilder: (context, index) {
                           final track = filtered[index];
+                          final localCoverPath =
+                              widget.store.coverPathFor(track);
+                          _scheduleCoverLoadIfNeeded(
+                            widget.store,
+                            track,
+                            localCoverPath,
+                          );
                           return _StandardTrackTile(
                             track: track,
+                            localCoverPath: localCoverPath,
                             isPlaying: widget.store.currentTrack?.id == track.id,
                             onTap: () {
                               widget.store.playTrack(track, queue: filtered);
@@ -944,8 +957,15 @@ class PlaylistDetailPage extends StatelessWidget {
                         itemCount: tracks.length,
                         itemBuilder: (context, index) {
                           final track = tracks[index];
+                          final localCoverPath = store.coverPathFor(track);
+                          _scheduleCoverLoadIfNeeded(
+                            store,
+                            track,
+                            localCoverPath,
+                          );
                           return _StandardTrackTile(
                             track: track,
+                            localCoverPath: localCoverPath,
                             isPlaying: store.currentTrack?.id == track.id,
                             onTap: () {
                               store.playTrack(track, queue: tracks);
@@ -1013,8 +1033,57 @@ class PluginManagerPage extends StatelessWidget {
     );
     controller.dispose();
 
-    if (url != null && url.isNotEmpty) {
-      await store.importPluginFromUrl(url);
+    if (url != null && url.isNotEmpty && context.mounted) {
+      await _runImportAction(
+        context,
+        loadingText: '正在解析链接并导入音源...',
+        action: () => store.importPluginsFromUrl(url),
+      );
+    }
+  }
+
+  Future<void> _handleScanQrImport(BuildContext context) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => QrPluginImportPage(store: store),
+      ),
+    );
+  }
+
+  Future<void> _runImportAction(
+    BuildContext context, {
+    required String loadingText,
+    required Future<PluginImportResult> Function() action,
+  }) async {
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(loadingText),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+    try {
+      final result = await action();
+      if (!context.mounted) return;
+      messenger.hideCurrentSnackBar();
+      if (result.imported.isEmpty) {
+        messenger.showSnackBar(
+          SnackBar(content: Text(result.firstError ?? '未导入任何音源插件')),
+        );
+        return;
+      }
+      final msg = result.imported.length == 1 && result.failedCount == 0
+          ? '已导入音源：${result.imported.first.name}'
+          : result.failedCount > 0
+              ? '成功导入 ${result.imported.length} 个音源，${result.failedCount} 个失败'
+              : '已批量导入 ${result.imported.length} 个音源插件';
+      messenger.showSnackBar(SnackBar(content: Text(msg)));
+    } catch (e) {
+      if (!context.mounted) return;
+      messenger.hideCurrentSnackBar();
+      final msg = e.toString().replaceFirst('FormatException: ', '');
+      messenger.showSnackBar(SnackBar(content: Text('导入失败：$msg')));
     }
   }
 
@@ -1066,6 +1135,13 @@ class PluginManagerPage extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(
         title: const Text('音源插件管理'),
+        actions: [
+          IconButton(
+            tooltip: '扫码添加音源',
+            onPressed: () => _handleScanQrImport(context),
+            icon: const Icon(Icons.qr_code_scanner_rounded),
+          ),
+        ],
       ),
       body: ListenableBuilder(
         listenable: store,
@@ -1081,7 +1157,31 @@ class PluginManagerPage extends StatelessWidget {
                   runSpacing: 8,
                   children: [
                     FilledButton.icon(
-                      onPressed: () => store.importPluginFromFile(),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: SodaTheme.accent,
+                        foregroundColor: const Color(0xFF07140D),
+                      ),
+                      onPressed: () => _handleScanQrImport(context),
+                      icon: const Icon(Icons.qr_code_scanner_rounded, size: 18),
+                      label: const Text(
+                        '扫码添加',
+                        style: TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                    FilledButton.tonalIcon(
+                      onPressed: () => _runImportAction(
+                        context,
+                        loadingText: '正在读取本地插件...',
+                        action: () async {
+                          final p = await store.importPluginFromFile();
+                          return PluginImportResult(
+                            imported: p != null
+                                ? <MusicSourcePlugin>[p]
+                                : const <MusicSourcePlugin>[],
+                            firstError: p == null ? '未选择有效插件文件' : null,
+                          );
+                        },
+                      ),
                       icon: const Icon(Icons.folder_open_rounded, size: 18),
                       label: const Text('本地 .js 文件'),
                     ),
@@ -1446,8 +1546,11 @@ class ArtistTracksPage extends StatelessWidget {
                   itemCount: tracks.length,
                   itemBuilder: (context, index) {
                     final track = tracks[index];
+                    final localCoverPath = store.coverPathFor(track);
+                    _scheduleCoverLoadIfNeeded(store, track, localCoverPath);
                     return _StandardTrackTile(
                       track: track,
+                      localCoverPath: localCoverPath,
                       isPlaying: store.currentTrack?.id == track.id,
                       onTap: () {
                         store.playTrack(track, queue: tracks);
@@ -1466,9 +1569,24 @@ class ArtistTracksPage extends StatelessWidget {
   }
 }
 
+void _scheduleCoverLoadIfNeeded(
+  AppStore store,
+  Track track,
+  String? localCoverPath,
+) {
+  if (!track.isOnlinePluginTrack &&
+      localCoverPath == null &&
+      (track.albumArtUri?.isNotEmpty ?? false)) {
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => store.ensureCoverLoaded(track),
+    );
+  }
+}
+
 class _StandardTrackTile extends StatelessWidget {
   const _StandardTrackTile({
     required this.track,
+    this.localCoverPath,
     required this.isPlaying,
     required this.onTap,
     this.onMore,
@@ -1476,6 +1594,7 @@ class _StandardTrackTile extends StatelessWidget {
   });
 
   final Track track;
+  final String? localCoverPath;
   final bool isPlaying;
   final VoidCallback onTap;
   final VoidCallback? onMore;
@@ -1487,20 +1606,32 @@ class _StandardTrackTile extends StatelessWidget {
 
     return ListTile(
       onTap: onTap,
-      leading: Container(
+      leading: SizedBox(
         width: 44,
         height: 44,
-        decoration: BoxDecoration(
-          color: isPlaying
-              ? colors.primary.withValues(alpha: 0.16)
-              : colors.surfaceContainerHighest.withValues(alpha: 0.55),
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: Icon(
-          isPlaying ? Icons.equalizer_rounded : Icons.music_note_rounded,
-          color: isPlaying
-              ? colors.primary
-              : colors.onSurface.withValues(alpha: 0.65),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            CoverArtWidget(
+              track: track,
+              localPath: localCoverPath,
+              accentColor: colors.primary,
+              size: 44,
+              borderRadius: 10,
+            ),
+            if (isPlaying)
+              ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: ColoredBox(
+                  color: Colors.black.withValues(alpha: 0.45),
+                  child: Icon(
+                    Icons.equalizer_rounded,
+                    color: colors.primary,
+                    size: 22,
+                  ),
+                ),
+              ),
+          ],
         ),
       ),
       title: Text(

@@ -103,6 +103,9 @@ class PlaybackService : Service() {
     @Volatile
     private var currentTrackHeaders: Map<String, String> = emptyMap()
 
+    @Volatile
+    private var currentMediaUri: String = ""
+
     private var queueTracks: List<QueueTrack> = emptyList()
     private var currentQueueIndex: Int = -1
     private var lyricOffsetMs: Long = 0L
@@ -314,12 +317,21 @@ class PlaybackService : Service() {
         }
 
         override fun onPlayerError(error: PlaybackException) {
+            android.util.Log.e(
+                "SodaPlayback",
+                "ExoPlayer error track=$currentTrackId url=$currentMediaUri msg=${error.message}",
+                error
+            )
             stopTickLoop()
             updateMediaSessionPlaybackState()
             pushPlaybackState()
             PlayerServiceBridge.sendAction(
                 "error",
-                mapOf("message" to (error.message ?: "Playback error"))
+                mapOf(
+                    "message" to (error.message ?: "Playback error"),
+                    "trackId" to currentTrackId,
+                    "url" to currentMediaUri
+                )
             )
         }
     }
@@ -363,6 +375,11 @@ class PlaybackService : Service() {
                         ds.setRequestProperty(k, v)
                     }
                 }
+            }
+            if (hdrs.keys.none { it.equals("Referer", ignoreCase = true) } &&
+                currentMediaUri.contains("music.126.net", ignoreCase = true)
+            ) {
+                ds.setRequestProperty("Referer", "https://music.163.com/")
             }
             ds
         }
@@ -528,6 +545,7 @@ class PlaybackService : Service() {
             }
         }
 
+        currentMediaUri = uriRaw
         val mediaUri = resolveMediaUri(uriRaw)
         if (mediaUri != null) {
             isDucked = false
@@ -538,6 +556,17 @@ class PlaybackService : Service() {
             player.prepare()
             requestAudioFocus()
             player.play()
+        } else {
+            player.stop()
+            player.clearMediaItems()
+            PlayerServiceBridge.sendAction(
+                "error",
+                mapOf(
+                    "message" to "无法解析音频地址",
+                    "trackId" to id,
+                    "code" to "EMPTY_URI"
+                )
+            )
         }
 
         updateMediaMetadata(lyricInfoJson = null)
@@ -606,9 +635,16 @@ class PlaybackService : Service() {
 
     fun play() {
         if (!::player.isInitialized) return
+        if (player.mediaItemCount == 0) {
+            PlayerServiceBridge.sendAction("retry_current", emptyMap())
+            return
+        }
         isDucked = false
         cancelFadeIn(restoreVolume = true)
         requestAudioFocus()
+        if (player.playerError != null || player.playbackState == Player.STATE_IDLE) {
+            player.prepare()
+        }
         player.play()
         updateMediaSessionPlaybackState()
         updateNotification(tickerText = null, onlyUpdate = true)

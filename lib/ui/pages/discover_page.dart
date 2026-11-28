@@ -4,6 +4,8 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:soda_pulse/core/app_store.dart';
+import 'package:soda_pulse/services/online_music_catalog.dart';
+import 'package:soda_pulse/ui/pages/online_playlist_page.dart';
 import 'package:soda_pulse/ui/theme/soda_theme.dart';
 
 class DiscoverPage extends StatefulWidget {
@@ -119,6 +121,80 @@ class _DiscoverPageState extends State<DiscoverPage> {
     });
   }
 
+  void _openOnlineChart(OnlineChartDef chart) {
+    if (widget.store.primaryOnlinePlugin == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请先在「我的 -> 音源插件」导入并启用音源')),
+      );
+      return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => OnlinePlaylistDetailPage(
+          store: widget.store,
+          playlistId: chart.id,
+          title: chart.title,
+          subtitle: chart.subtitle,
+          onOpenPlayer: () {
+            Navigator.of(context).pop();
+            widget.onOpenPlayer();
+          },
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showImportNeteaseDialog() async {
+    final controller = TextEditingController();
+    final input = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('导入网易云歌单'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: '粘贴网易云歌单链接或歌单 ID（如 3778678）',
+          ),
+          onSubmitted: (v) => Navigator.of(context).pop(v.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(controller.text.trim()),
+            child: const Text('导入'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (input == null || input.isEmpty || !mounted) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text('正在解析并导入网易云歌单...'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+    try {
+      final pl = await widget.store.importNeteasePlaylist(input);
+      if (!mounted) return;
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(content: Text('已导入歌单「${pl.name}」（${pl.trackIds.length} 首）')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      messenger.hideCurrentSnackBar();
+      final msg = e.toString().replaceFirst('FormatException: ', '');
+      messenger.showSnackBar(SnackBar(content: Text('导入失败：$msg')));
+    }
+  }
+
   void _playTrackList(List<dynamic> tracks, {int index = 0}) {
     if (tracks.isEmpty) {
       widget.store.playDemo();
@@ -194,9 +270,15 @@ class _DiscoverPageState extends State<DiscoverPage> {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    '编辑部 · 每天换一批',
+                    widget.store.primaryOnlinePlugin != null
+                        ? '已连接音源 · ${widget.store.primaryOnlinePlugin!.name}'
+                        : '编辑部 · 每天换一批',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.48),
+                      color: widget.store.primaryOnlinePlugin != null
+                          ? _emerald.withValues(alpha: 0.85)
+                          : Colors.white.withValues(alpha: 0.48),
                       fontSize: 12.5,
                       fontWeight: FontWeight.w500,
                     ),
@@ -366,6 +448,42 @@ class _DiscoverPageState extends State<DiscoverPage> {
         if (widget.store.recentSearches.isNotEmpty) ...[
           _buildRecentSearchChips(),
         ],
+        if (onlineResults.isNotEmpty || _isSearchingOnline) ...[
+          Row(
+            children: [
+              Text(
+                '在线搜索结果 (${onlineResults.length})',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              if (_isSearchingOnline) ...[
+                const SizedBox(width: 8),
+                const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: _emerald,
+                  ),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 10),
+          ...List.generate(onlineResults.length, (index) {
+            final track = onlineResults[index];
+            return _SearchTrackTile(
+              track: track,
+              localCoverPath: widget.store.coverPathFor(track),
+              badge: '在线',
+              onTap: () => _playTrackList(onlineResults, index: index),
+            );
+          }),
+          const SizedBox(height: 18),
+        ],
         Row(
           children: [
             Text(
@@ -431,7 +549,9 @@ class _DiscoverPageState extends State<DiscoverPage> {
               borderRadius: BorderRadius.circular(16),
             ),
             child: Text(
-              '本地曲库暂无匹配，可点击右上角搜索在线曲库',
+              widget.store.primaryOnlinePlugin != null
+                  ? '本地无匹配，点键盘搜索或右上角「搜在线曲库」'
+                  : '本地无匹配，请先在「我的 -> 音源插件」导入音源后搜在线',
               style: TextStyle(
                 color: Colors.white.withValues(alpha: 0.48),
                 fontSize: 13,
@@ -441,32 +561,21 @@ class _DiscoverPageState extends State<DiscoverPage> {
         else
           ...List.generate(localResults.length, (index) {
             final track = localResults[index];
+            final localCoverPath = widget.store.coverPathFor(track);
+            if (!track.isOnlinePluginTrack &&
+                localCoverPath == null &&
+                (track.albumArtUri?.isNotEmpty ?? false)) {
+              WidgetsBinding.instance.addPostFrameCallback(
+                (_) => widget.store.ensureCoverLoaded(track),
+              );
+            }
             return _SearchTrackTile(
               track: track,
+              localCoverPath: localCoverPath,
               badge: '本地',
               onTap: () => _playTrackList(localResults, index: index),
             );
           }),
-        if (onlineResults.isNotEmpty) ...[
-          const SizedBox(height: 20),
-          Text(
-            '在线搜索结果 (${onlineResults.length})',
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 15,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 10),
-          ...List.generate(onlineResults.length, (index) {
-            final track = onlineResults[index];
-            return _SearchTrackTile(
-              track: track,
-              badge: '在线',
-              onTap: () => _playTrackList(onlineResults, index: index),
-            );
-          }),
-        ],
       ],
     );
   }
@@ -537,39 +646,87 @@ class _DiscoverPageState extends State<DiscoverPage> {
         if (showSearchPanel) _buildRecentSearchChips(),
         _SectionHeader(
           icon: Icons.show_chart_rounded,
-          title: '曲库排行榜',
-          subtitle: '实时榜 · 每小时更新',
+          title: widget.store.primaryOnlinePlugin != null ? '在线排行榜' : '曲库排行榜',
+          subtitle: '实时榜 · 点击查看曲目与播放',
         ),
         const SizedBox(height: 14),
         _buildHotChartHeroCard(library),
         const SizedBox(height: 10),
         _ChartRowCard(
-          title: '新歌榜',
-          subtitle: '实时榜单 · 整榜播放',
+          title: OnlineMusicCatalog.charts[1].title,
+          subtitle: OnlineMusicCatalog.charts[1].subtitle,
           track: library.length > 1
               ? library[1]
               : (library.isNotEmpty ? library.first : null),
-          fallbackGradient: const [Color(0xFF1D3E4E), Color(0xFF0F2028)],
-          onTap: () => _playTrackList(library.reversed.toList()),
+          fallbackGradient: OnlineMusicCatalog.charts[1].gradientColors,
+          onTap: () => widget.store.primaryOnlinePlugin != null
+              ? _openOnlineChart(OnlineMusicCatalog.charts[1])
+              : _playTrackList(library.reversed.toList()),
         ),
         const SizedBox(height: 10),
         _ChartRowCard(
-          title: '逐字演示榜',
-          subtitle: '实时榜单 · 整榜播放',
+          title: OnlineMusicCatalog.charts[2].title,
+          subtitle: OnlineMusicCatalog.charts[2].subtitle,
           track: library.length > 2
               ? library[2]
               : (library.isNotEmpty ? library.first : null),
-          fallbackGradient: const [Color(0xFF1B4530), Color(0xFF0D2117)],
-          onTap: () {
-            widget.store.playDemo();
-            widget.onOpenPlayer();
-          },
+          fallbackGradient: OnlineMusicCatalog.charts[2].gradientColors,
+          onTap: () => widget.store.primaryOnlinePlugin != null
+              ? _openOnlineChart(OnlineMusicCatalog.charts[2])
+              : _playTrackList(library),
+        ),
+        const SizedBox(height: 10),
+        _ChartRowCard(
+          title: OnlineMusicCatalog.charts[3].title,
+          subtitle: OnlineMusicCatalog.charts[3].subtitle,
+          track: library.isNotEmpty ? library.first : null,
+          fallbackGradient: OnlineMusicCatalog.charts[3].gradientColors,
+          onTap: () => widget.store.primaryOnlinePlugin != null
+              ? _openOnlineChart(OnlineMusicCatalog.charts[3])
+              : _playTrackList(library),
         ),
         const SizedBox(height: 26),
-        _SectionHeader(
-          icon: Icons.grid_view_rounded,
-          title: '精选歌单',
-          subtitle: '按心情与场景挑好 · 点开即整单播放',
+        Row(
+          children: [
+            Expanded(
+              child: _SectionHeader(
+                icon: Icons.grid_view_rounded,
+                title: '精选歌单',
+                subtitle: '按心情与场景挑好 · 点开即整单播放',
+              ),
+            ),
+            GestureDetector(
+              onTap: _showImportNeteaseDialog,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 7,
+                ),
+                decoration: BoxDecoration(
+                  color: _emeraldBox,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: _emerald.withValues(alpha: 0.35),
+                  ),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.playlist_add_rounded, size: 15, color: _emerald),
+                    SizedBox(width: 5),
+                    Text(
+                      '导入网易云歌单',
+                      style: TextStyle(
+                        color: _emerald,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
         ),
         const SizedBox(height: 14),
         GridView.builder(
@@ -592,7 +749,9 @@ class _DiscoverPageState extends State<DiscoverPage> {
 
   Widget _buildHotChartHeroCard(List<dynamic> library) {
     return GestureDetector(
-      onTap: () => _playTrackList(library),
+      onTap: () => widget.store.primaryOnlinePlugin != null
+          ? _openOnlineChart(OnlineMusicCatalog.charts.first)
+          : _playTrackList(library),
       child: Container(
         height: 188,
         clipBehavior: Clip.antiAlias,
@@ -1096,11 +1255,13 @@ class _PlaylistGridCard extends StatelessWidget {
 class _SearchTrackTile extends StatelessWidget {
   const _SearchTrackTile({
     required this.track,
+    this.localCoverPath,
     required this.badge,
     required this.onTap,
   });
 
   final dynamic track;
+  final String? localCoverPath;
   final String badge;
   final VoidCallback onTap;
 
@@ -1121,8 +1282,9 @@ class _SearchTrackTile extends StatelessWidget {
         child: Row(
           children: [
             CoverArtWidget(
-                  accentColor: const Color(0xFF2FE08B),
+              accentColor: const Color(0xFF2FE08B),
               track: track,
+              localPath: localCoverPath,
               size: 46,
               borderRadius: 12,
             ),

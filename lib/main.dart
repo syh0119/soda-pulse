@@ -1,10 +1,22 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:soda_pulse/core/app_store.dart';
 import 'package:soda_pulse/ui/screens/feed_screen.dart';
 import 'package:soda_pulse/ui/theme/soda_theme.dart';
 
+class _SodaHttpOverrides extends HttpOverrides {
+  @override
+  HttpClient createHttpClient(SecurityContext? context) {
+    final client = super.createHttpClient(context);
+    client.userAgent = CoverArtWidget.defaultUserAgent;
+    return client;
+  }
+}
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  HttpOverrides.global = _SodaHttpOverrides();
   runApp(const SodaPulseApp());
 }
 

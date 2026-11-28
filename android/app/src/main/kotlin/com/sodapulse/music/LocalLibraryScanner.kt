@@ -347,6 +347,9 @@ object LocalLibraryScanner {
                             readTimeout = 5000
                             instanceFollowRedirects = true
                             setRequestProperty("User-Agent", "Mozilla/5.0")
+                            if (trimmed.contains("music.126.net", ignoreCase = true)) {
+                                setRequestProperty("Referer", "https://music.163.com/")
+                            }
                         }
                         if (connection.responseCode !in 200..299) {
                             null

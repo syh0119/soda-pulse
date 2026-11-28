@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
+import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -29,7 +30,7 @@ import javax.crypto.spec.SecretKeySpec
 
 object SodaJsPluginRuntime {
 
-    private const val RPC_TIMEOUT_SECONDS = 15L
+    private const val RPC_TIMEOUT_SECONDS = 25L
     private const val INIT_TIMEOUT_SECONDS = 12L
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -59,13 +60,15 @@ object SodaJsPluginRuntime {
         type: String
     ): Map<String, Any?> {
         ensureInitialized(context)
-        val scriptB64 = Base64.encodeToString(script.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+        val payloadKey = "script_${UUID.randomUUID()}"
+        payloadStore[payloadKey] = script
         val resultJson = callRpc(
             "window.__sodaLoadPlugin('%s', '%s', '%s', '%s')",
             escapeJs(id),
-            escapeJs(scriptB64),
+            escapeJs(payloadKey),
             escapeJs(type)
         )
+        payloadStore.remove(payloadKey)
         return parseJsonObjectToMap(resultJson)
     }
 
@@ -119,6 +122,92 @@ object SodaJsPluginRuntime {
         return (map["tracks"] as? List<Map<String, Any?>>) ?: emptyList()
     }
 
+    private data class ProbeResult(
+        val ok: Boolean,
+        val statusCode: Int,
+        val contentType: String,
+        val reason: String,
+        val finalUrl: String = ""
+    )
+
+    private fun probeAudioUrl(url: String, headers: Map<String, String>): ProbeResult {
+        var currentUrl = url
+        val redirectCodes = setOf(301, 302, 303, 307, 308)
+        try {
+            for (hop in 0..3) {
+                val parsedUrl = URL(currentUrl)
+                val conn = (parsedUrl.openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 4000
+                    readTimeout = 4000
+                    instanceFollowRedirects = false
+                    requestMethod = "GET"
+                }
+                try {
+                    headers.forEach { (k, v) ->
+                        if (k.isNotBlank() && v.isNotBlank()) {
+                            conn.setRequestProperty(k, v)
+                        }
+                    }
+                    conn.setRequestProperty("Range", "bytes=0-1")
+                    conn.setRequestProperty("Accept-Encoding", "identity")
+                    if (headers.keys.none { it.equals("User-Agent", ignoreCase = true) }) {
+                        conn.setRequestProperty(
+                            "User-Agent",
+                            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36"
+                        )
+                    }
+                    val host = parsedUrl.host.orEmpty().lowercase()
+                    if (host.contains("music.126.net") &&
+                        headers.keys.none { it.equals("Referer", ignoreCase = true) }
+                    ) {
+                        conn.setRequestProperty("Referer", "https://music.163.com/")
+                    }
+
+                    val status = conn.responseCode
+                    val rawContentType = conn.contentType.orEmpty()
+                    val contentTypeLower = rawContentType.lowercase()
+
+                    if (status in redirectCodes) {
+                        val location = conn.getHeaderField("Location")
+                        if (location.isNullOrBlank()) {
+                            return ProbeResult(false, status, rawContentType, "HTTP $status (empty Location)", currentUrl)
+                        }
+                        currentUrl = URL(parsedUrl, location).toString()
+                        continue
+                    }
+
+                    val isInvalidContentType = contentTypeLower.contains("text/html") ||
+                        contentTypeLower.contains("application/json") ||
+                        contentTypeLower.contains("text/plain")
+
+                    return if (status in 200..299 && !isInvalidContentType) {
+                        ProbeResult(true, status, rawContentType, "ok", currentUrl)
+                    } else {
+                        ProbeResult(false, status, rawContentType, "HTTP $status ($rawContentType)", currentUrl)
+                    }
+                } finally {
+                    conn.disconnect()
+                }
+            }
+            return ProbeResult(false, -1, "", "Too many redirects", currentUrl)
+        } catch (e: Exception) {
+            return ProbeResult(false, -1, "", e.message ?: e.javaClass.simpleName, currentUrl)
+        }
+    }
+
+    private fun extractNumericWySongId(rawItemJson: String): String? {
+        return try {
+            val obj = JSONObject(rawItemJson)
+            val rawId = obj.optString("id").takeIf { it.isNotBlank() }
+                ?: obj.optString("songmid").takeIf { it.isNotBlank() }
+                ?: return null
+            val trimmed = rawId.trim()
+            if (trimmed.isNotEmpty() && trimmed.all { it.isDigit() }) trimmed else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     fun resolveMediaUrl(
         context: Context,
         pluginId: String,
@@ -127,15 +216,108 @@ object SodaJsPluginRuntime {
         source: String = ""
     ): Map<String, Any?> {
         ensureInitialized(context)
+        val startMs = System.currentTimeMillis()
         val itemB64 = Base64.encodeToString(rawItemJson.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-        val resultJson = callRpc(
-            "window.__sodaResolveUrl('%s', '%s', '%s', '%s', '%s')",
-            escapeJs(pluginId),
-            escapeJs(itemB64),
-            escapeJs(quality),
-            escapeJs(source)
+        val fallbackQ = when (quality.lowercase()) {
+            "flac", "flac24bit", "24bit" -> "320k"
+            "128k", "standard", "low" -> "320k"
+            else -> "128k"
+        }
+        val candidates = listOf(quality, fallbackQ)
+            .filter { it.isNotBlank() }
+            .distinct()
+        var lastError = "no_valid_url"
+
+        fun attemptQuality(targetQuality: String): Map<String, Any?>? {
+            val resultJson = callRpc(
+                "window.__sodaResolveUrl('%s', '%s', '%s', '%s', '%s')",
+                escapeJs(pluginId),
+                escapeJs(itemB64),
+                escapeJs(targetQuality),
+                escapeJs(source)
+            )
+            val jsResult = parseJsonObjectToMap(resultJson)
+            val url = (jsResult["url"] as? String)?.trim().orEmpty()
+            val rawHdrs = jsResult["headers"] as? Map<*, *>
+            val headers = mutableMapOf<String, String>()
+            rawHdrs?.forEach { (k, v) ->
+                val ks = k?.toString()?.trim()
+                val vs = v?.toString()?.trim()
+                if (!ks.isNullOrEmpty() && !vs.isNullOrEmpty()) {
+                    headers[ks] = vs
+                }
+            }
+
+            if (!url.startsWith("http://", ignoreCase = true) &&
+                !url.startsWith("https://", ignoreCase = true)
+            ) {
+                val jsErr = jsResult["error"] as? String
+                if (!jsErr.isNullOrBlank()) {
+                    lastError = jsErr
+                }
+                Log.i(
+                    "SodaPlugin",
+                    "resolveMediaUrl plugin=$pluginId quality=$targetQuality elapsed=${System.currentTimeMillis() - startMs}ms emptyUrl err=$lastError"
+                )
+                return null
+            }
+
+            val probe = probeAudioUrl(url, headers)
+            val host = runCatching { URL(probe.finalUrl.ifEmpty { url }).host }.getOrDefault("")
+            Log.i(
+                "SodaPlugin",
+                "resolveMediaUrl plugin=$pluginId quality=$targetQuality elapsed=${System.currentTimeMillis() - startMs}ms " +
+                    "probeOk=${probe.ok} status=${probe.statusCode} host=$host reason=${probe.reason}"
+            )
+            return if (probe.ok) {
+                mapOf(
+                    "ok" to true,
+                    "url" to probe.finalUrl.ifEmpty { url },
+                    "headers" to headers,
+                    "quality" to (jsResult["quality"] as? String ?: targetQuality)
+                )
+            } else {
+                lastError = probe.reason
+                null
+            }
+        }
+
+        candidates.forEachIndexed { idx, q ->
+            if (idx > 0) {
+                try {
+                    Thread.sleep(1000L)
+                } catch (_: InterruptedException) {
+                }
+            }
+            attemptQuality(q)?.let { return it }
+        }
+
+        if (source.equals("wy", ignoreCase = true)) {
+            val songId = extractNumericWySongId(rawItemJson)
+            if (!songId.isNullOrEmpty()) {
+                val outerUrl = "https://music.163.com/song/media/outer/url?id=$songId.mp3"
+                val outerHeaders = mapOf("Referer" to "https://music.163.com/")
+                val probe = probeAudioUrl(outerUrl, outerHeaders)
+                val host = runCatching { URL(probe.finalUrl.ifEmpty { outerUrl }).host }.getOrDefault("")
+                Log.i(
+                    "SodaPlugin",
+                    "resolveMediaUrl wy_outer_fallback ok=${probe.ok} status=${probe.statusCode} host=$host reason=${probe.reason}"
+                )
+                if (probe.ok) {
+                    return mapOf(
+                        "ok" to true,
+                        "url" to probe.finalUrl.ifEmpty { outerUrl },
+                        "headers" to outerHeaders,
+                        "quality" to "128k"
+                    )
+                }
+            }
+        }
+
+        return mapOf(
+            "ok" to false,
+            "error" to lastError
         )
-        return parseJsonObjectToMap(resultJson)
     }
 
     fun resolveLyric(
@@ -367,7 +549,7 @@ object SodaJsPluginRuntime {
     ): String {
         var conn: HttpURLConnection? = null
         return try {
-            val clampedTimeout = timeoutMs.coerceIn(3000, 25000)
+            val clampedTimeout = timeoutMs.coerceIn(8000, 25000)
             val upperMethod = method.trim().uppercase().ifEmpty { "GET" }
             conn = (URL(url).openConnection() as HttpURLConnection).apply {
                 requestMethod = upperMethod
@@ -1097,9 +1279,9 @@ object SodaJsPluginRuntime {
     ]);
   }
 
-  window.__sodaLoadPlugin = function(callId, pluginId, scriptB64, type) {
+  window.__sodaLoadPlugin = function(callId, pluginId, scriptKey, type) {
     try {
-      var code = SodaBuffer.from(scriptB64, 'base64').toString('utf8');
+      var code = _SodaNative.takePayload(scriptKey);
       var module = { exports: {} };
       var lxHandler = null;
       var lxSources = {};
@@ -1112,7 +1294,7 @@ object SodaJsPluginRuntime {
         },
         env: 'mobile',
         version: '2.0.0',
-        currentScriptInfo: { name: pluginId, version: '1.0.0' },
+        currentScriptInfo: { name: pluginId, version: '1.0.0', rawScript: code },
         on: function(ev, fn) {
           if (ev === 'request' && typeof fn === 'function') {
             lxHandler = fn;
@@ -1125,6 +1307,10 @@ object SodaJsPluginRuntime {
           return Promise.resolve();
         },
         request: function(url, opts, cb) {
+          if (typeof opts === 'function') {
+            cb = opts;
+            opts = {};
+          }
           var options = opts || {};
           var headers = Object.assign({}, options.headers || {});
           var reqCfg = {
@@ -1172,10 +1358,22 @@ object SodaJsPluginRuntime {
             bufToString: function(b, e) { return SodaBuffer.from(b).toString(e); }
           },
           crypto: {
-            md5: function(s) { return CryptoJS.MD5(s).toString(); }
+            md5: function(s) { return CryptoJS.MD5(s).toString(); },
+            randomBytes: function(n) {
+              var arr = new Uint8Array(n || 0);
+              if (window.crypto && window.crypto.getRandomValues) {
+                window.crypto.getRandomValues(arr);
+              } else {
+                for (var i = 0; i < arr.length; i++) arr[i] = Math.floor(Math.random() * 256);
+              }
+              return new SodaBuffer(arr);
+            }
           }
         }
       };
+
+      window.lx = lx;
+      if (typeof globalThis !== 'undefined') globalThis.lx = lx;
 
       var factory = new Function(
         'module', 'exports', 'require', 'lx', 'Buffer', 'console',
@@ -1189,6 +1387,7 @@ object SodaJsPluginRuntime {
       var pluginEntry = {
         type: type || (lxHandler ? 'lx' : 'musicfree'),
         exports: module.exports || {},
+        lx: lx,
         lxHandler: lxHandler,
         lxSources: lxSources
       };
@@ -1302,7 +1501,9 @@ object SodaJsPluginRuntime {
       var q = quality || 'standard';
 
       if (p.exports && typeof p.exports.getMediaSource === 'function') {
-        var res = await p.exports.getMediaSource(item, q);
+        var mfMap = { '128k': 'standard', '320k': 'high', 'flac': 'super', 'flac24bit': 'super', '24bit': 'super' };
+        var mfQ = mfMap[q] || q;
+        var res = await p.exports.getMediaSource(item, mfQ);
         if (typeof res === 'string') {
           _SodaNative.onRpcResult(callId, JSON.stringify({ ok: !!res, url: res, headers: {}, quality: q }));
           return;
@@ -1323,19 +1524,36 @@ object SodaJsPluginRuntime {
       }
 
       if (p.lxHandler) {
+        if (p.lx) {
+          window.lx = p.lx;
+          if (typeof globalThis !== 'undefined') globalThis.lx = p.lx;
+        }
         var src = source || item.source || (Object.keys(p.lxSources || {})[0]) || 'tx';
-        var lxUrl = await p.lxHandler({
-          source: src,
-          action: 'musicUrl',
-          info: { type: q, musicInfo: item }
-        });
-        var finalUrl = typeof lxUrl === 'string' ? lxUrl : (lxUrl && lxUrl.url ? lxUrl.url : '');
+        var qMap = { standard: '320k', high: '320k', lossless: 'flac', super: 'flac', low: '128k' };
+        var mappedQ = qMap[q] || q;
+        var finalUrl = '';
+        var finalHeaders = {};
+        var lastErr = '';
+        try {
+          var lxUrl = await p.lxHandler({
+            source: src,
+            action: 'musicUrl',
+            info: { type: mappedQ, musicInfo: item }
+          });
+          var u = typeof lxUrl === 'string' ? lxUrl : (lxUrl && lxUrl.url ? lxUrl.url : '');
+          if (u && /^https?:\/\//i.test(u)) {
+            finalUrl = u;
+            finalHeaders = (lxUrl && lxUrl.headers) ? lxUrl.headers : {};
+          }
+        } catch (eTry) {
+          lastErr = eTry && eTry.message ? eTry.message : String(eTry);
+        }
         _SodaNative.onRpcResult(callId, JSON.stringify({
           ok: !!finalUrl,
           url: finalUrl,
-          headers: (lxUrl && lxUrl.headers) ? lxUrl.headers : {},
-          quality: q,
-          error: finalUrl ? null : 'Empty LX media URL'
+          headers: finalHeaders,
+          quality: mappedQ,
+          error: finalUrl ? null : (lastErr || 'Empty LX media URL')
         }));
         return;
       }
@@ -1367,6 +1585,10 @@ object SodaJsPluginRuntime {
       }
 
       if (p.lxHandler) {
+        if (p.lx) {
+          window.lx = p.lx;
+          if (typeof globalThis !== 'undefined') globalThis.lx = p.lx;
+        }
         var src = item.source || (Object.keys(p.lxSources || {})[0]) || 'tx';
         var lxRes = await p.lxHandler({
           source: src,

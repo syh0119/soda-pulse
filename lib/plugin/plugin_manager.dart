@@ -351,8 +351,25 @@ class PluginParser {
 class PluginFetcher {
   static const Duration _timeout = Duration(seconds: 12);
 
+  static String normalizeUrl(String rawUrl) {
+    final trimmed = rawUrl.trim();
+    if (trimmed.isEmpty) return '';
+    final buf = StringBuffer();
+    for (final rune in trimmed.runes) {
+      if (rune > 0x7F) {
+        buf.write(Uri.encodeComponent(String.fromCharCode(rune)));
+      } else if (rune == 0x20) {
+        buf.write('%20');
+      } else {
+        buf.writeCharCode(rune);
+      }
+    }
+    return buf.toString();
+  }
+
   static Future<String> fetchScriptFromUrl(String url) async {
-    final uri = Uri.tryParse(url.trim());
+    final normalized = normalizeUrl(url);
+    final uri = Uri.tryParse(normalized);
     if (uri == null ||
         !uri.hasScheme ||
         (uri.scheme != 'http' && uri.scheme != 'https') ||
@@ -369,6 +386,12 @@ class PluginFetcher {
 
       final response = await request.close().timeout(_timeout);
       if (response.statusCode != HttpStatus.ok) {
+        if (response.statusCode == HttpStatus.forbidden &&
+            uri.path.contains('/api/bqr/')) {
+          throw const FormatException(
+            '该二维码为气泡水专属加密短链（服务端限制 HTTP 403），请改扫原始音源链接二维码、粘贴原始 .js 链接或导入本地 .js 文件',
+          );
+        }
         throw FormatException('请求失败 (HTTP ${response.statusCode})');
       }
 
@@ -382,6 +405,323 @@ class PluginFetcher {
       return body;
     } finally {
       client.close(force: true);
+    }
+  }
+}
+
+enum PluginQrPayloadKind {
+  scriptUrl,
+  manifestJson,
+  inlineScript,
+  urlList,
+}
+
+class PluginQrParseResult {
+  const PluginQrParseResult({
+    required this.kind,
+    this.urls = const <String>[],
+    this.inlineScript,
+    this.manifestJson,
+  });
+
+  final PluginQrPayloadKind kind;
+  final List<String> urls;
+  final String? inlineScript;
+  final String? manifestJson;
+}
+
+class PluginImportResult {
+  const PluginImportResult({
+    this.imported = const <MusicSourcePlugin>[],
+    this.failedCount = 0,
+    this.firstError,
+  });
+
+  final List<MusicSourcePlugin> imported;
+  final int failedCount;
+  final String? firstError;
+}
+
+class PluginQrParser {
+  PluginQrParser._();
+
+  static const FormatException _invalidQrException =
+      FormatException('二维码内容不是有效的音源插件或订阅链接');
+
+  static const List<String> _schemeQueryKeys = <String>[
+    'url',
+    'src',
+    'srcUrl',
+    'plugin',
+    'sub',
+    'subscribe',
+  ];
+
+  static final RegExp _dataBase64Pattern = RegExp(
+    r'^data:[^;,\s]*;base64,(.+)$',
+    caseSensitive: false,
+    dotAll: true,
+  );
+
+  static final RegExp _base64SchemePattern = RegExp(
+    r'^base64://(.+)$',
+    caseSensitive: false,
+    dotAll: true,
+  );
+
+  static final RegExp _customSchemePattern = RegExp(
+    r'^[a-zA-Z][a-zA-Z0-9+.-]*://\S+$',
+  );
+
+  static final RegExp _httpUrlPattern = RegExp(
+    r'''https?://[^\s<>"'`\]\u3000-\u303f\uff00-\uffef]+''',
+    caseSensitive: false,
+  );
+
+  static PluginQrParseResult parse(String raw) {
+    return _parseInternal(raw, depth: 0);
+  }
+
+  static PluginQrParseResult _parseInternal(String raw, {required int depth}) {
+    if (depth > 2) {
+      throw _invalidQrException;
+    }
+
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) {
+      throw _invalidQrException;
+    }
+
+    final dataMatch = _dataBase64Pattern.firstMatch(trimmed);
+    if (dataMatch != null) {
+      final decoded = _decodeBase64Text(dataMatch.group(1)!);
+      return _parseInternal(decoded, depth: depth + 1);
+    }
+
+    final base64SchemeMatch = _base64SchemePattern.firstMatch(trimmed);
+    if (base64SchemeMatch != null) {
+      final decoded = _decodeBase64Text(base64SchemeMatch.group(1)!);
+      return _parseInternal(decoded, depth: depth + 1);
+    }
+
+    if (_isValidHttpUrl(trimmed) && !RegExp(r'\s').hasMatch(trimmed)) {
+      return PluginQrParseResult(
+        kind: PluginQrPayloadKind.scriptUrl,
+        urls: <String>[trimmed],
+      );
+    }
+
+    if (_customSchemePattern.hasMatch(trimmed)) {
+      final uri = Uri.tryParse(trimmed);
+      if (uri != null &&
+          uri.scheme.isNotEmpty &&
+          uri.scheme != 'http' &&
+          uri.scheme != 'https' &&
+          uri.scheme != 'base64') {
+        final fromParams = _extractFromSchemeParams(uri);
+        if (fromParams != null) {
+          if (_isValidHttpUrl(fromParams)) {
+            return PluginQrParseResult(
+              kind: PluginQrPayloadKind.scriptUrl,
+              urls: <String>[fromParams],
+            );
+          }
+          return _parseInternal(fromParams, depth: depth + 1);
+        }
+
+        final embeddedUrls = _extractEmbeddedHttpUrls(trimmed);
+        if (embeddedUrls.isNotEmpty) {
+          return PluginQrParseResult(
+            kind: embeddedUrls.length == 1
+                ? PluginQrPayloadKind.scriptUrl
+                : PluginQrPayloadKind.urlList,
+            urls: embeddedUrls,
+          );
+        }
+
+        String? decodedUri;
+        try {
+          decodedUri = Uri.decodeFull(trimmed);
+        } catch (_) {
+          decodedUri = null;
+        }
+        if (decodedUri != null && decodedUri != trimmed) {
+          final decodedUrls = _extractEmbeddedHttpUrls(decodedUri);
+          if (decodedUrls.isNotEmpty) {
+            return PluginQrParseResult(
+              kind: decodedUrls.length == 1
+                  ? PluginQrPayloadKind.scriptUrl
+                  : PluginQrPayloadKind.urlList,
+              urls: decodedUrls,
+            );
+          }
+        }
+      }
+    }
+
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try {
+        final decoded = jsonDecode(trimmed);
+        if (decoded is Map<String, dynamic>) {
+          final script = decoded['script'];
+          if (script is String && script.trim().isNotEmpty) {
+            return PluginQrParseResult(
+              kind: PluginQrPayloadKind.inlineScript,
+              inlineScript: script.trim(),
+            );
+          }
+        }
+
+        final manifestUrls = extractManifestUrls(trimmed);
+        if (manifestUrls.isNotEmpty) {
+          return PluginQrParseResult(
+            kind: PluginQrPayloadKind.manifestJson,
+            urls: manifestUrls,
+            manifestJson: trimmed,
+          );
+        }
+      } catch (_) {
+        // Fall through if not valid JSON.
+      }
+    }
+
+    try {
+      PluginParser.parseScript(trimmed);
+      return PluginQrParseResult(
+        kind: PluginQrPayloadKind.inlineScript,
+        inlineScript: trimmed,
+      );
+    } catch (_) {
+      // Not a valid inline plugin script; continue to mixed text extraction.
+    }
+
+    final mixedUrls = _extractEmbeddedHttpUrls(trimmed);
+    if (mixedUrls.isNotEmpty) {
+      return PluginQrParseResult(
+        kind: mixedUrls.length == 1
+            ? PluginQrPayloadKind.scriptUrl
+            : PluginQrPayloadKind.urlList,
+        urls: mixedUrls,
+      );
+    }
+
+    throw _invalidQrException;
+  }
+
+  static List<String> extractManifestUrls(String jsonText) {
+    final trimmed = jsonText.trim();
+    if (trimmed.isEmpty) {
+      return const <String>[];
+    }
+
+    final dynamic decoded;
+    try {
+      decoded = jsonDecode(trimmed);
+    } catch (_) {
+      return const <String>[];
+    }
+
+    final seen = <String>{};
+    final result = <String>[];
+
+    void addUrl(Object? candidate) {
+      if (candidate is! String) return;
+      final normalized = candidate.trim();
+      if (_isValidHttpUrl(normalized) && seen.add(normalized)) {
+        result.add(normalized);
+      }
+    }
+
+    void collectEntry(Object? entry) {
+      if (entry is String) {
+        addUrl(entry);
+        return;
+      }
+      if (entry is Map) {
+        addUrl(entry['url']);
+        addUrl(entry['srcUrl']);
+        addUrl(entry['src']);
+      }
+    }
+
+    if (decoded is List) {
+      for (final item in decoded) {
+        collectEntry(item);
+      }
+    } else if (decoded is Map) {
+      final plugins = decoded['plugins'];
+      if (plugins is List) {
+        for (final item in plugins) {
+          collectEntry(item);
+        }
+      }
+      collectEntry(decoded);
+    }
+
+    return result;
+  }
+
+  static String? _extractFromSchemeParams(Uri uri) {
+    if (uri.queryParameters.isEmpty) {
+      return null;
+    }
+
+    final lowerMap = <String, String>{};
+    uri.queryParameters.forEach((key, value) {
+      lowerMap[key.toLowerCase()] = value;
+    });
+
+    for (final key in _schemeQueryKeys) {
+      final value =
+          uri.queryParameters[key] ?? lowerMap[key.toLowerCase()];
+      if (value != null && value.trim().isNotEmpty) {
+        return value.trim();
+      }
+    }
+    return null;
+  }
+
+  static List<String> _extractEmbeddedHttpUrls(String text) {
+    final seen = <String>{};
+    final urls = <String>[];
+
+    for (final match in _httpUrlPattern.allMatches(text)) {
+      var candidate = match.group(0) ?? '';
+      candidate = candidate.replaceFirst(RegExp(r'[),.;]+$'), '');
+      if (_isValidHttpUrl(candidate) && seen.add(candidate)) {
+        urls.add(candidate);
+      }
+    }
+
+    return urls;
+  }
+
+  static bool _isValidHttpUrl(String value) {
+    final uri = Uri.tryParse(value);
+    return uri != null &&
+        (uri.scheme == 'http' || uri.scheme == 'https') &&
+        uri.host.isNotEmpty;
+  }
+
+  static String _decodeBase64Text(String payload) {
+    final compact = payload.replaceAll(RegExp(r'\s+'), '');
+    if (compact.isEmpty) {
+      throw _invalidQrException;
+    }
+
+    final normalized = compact.replaceAll('-', '+').replaceAll('_', '/');
+    final paddedLength = (normalized.length + 3) ~/ 4 * 4;
+    final padded = normalized.padRight(paddedLength, '=');
+
+    try {
+      final bytes = base64Decode(padded);
+      final decoded = utf8.decode(bytes).trim();
+      if (decoded.isEmpty) {
+        throw _invalidQrException;
+      }
+      return decoded;
+    } catch (_) {
+      throw _invalidQrException;
     }
   }
 }

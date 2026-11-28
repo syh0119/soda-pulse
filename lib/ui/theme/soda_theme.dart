@@ -130,31 +130,70 @@ class CoverArtWidget extends StatelessWidget {
   final double borderRadius;
   final bool showVinylRing;
 
+  static const String defaultUserAgent =
+      'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
+
+  static Map<String, String> networkHeadersFor(String url) {
+    final lower = url.toLowerCase();
+    if (lower.contains('music.126.net') || lower.contains('music.163.com')) {
+      return const {'Referer': 'https://music.163.com/'};
+    }
+    return const <String, String>{};
+  }
+
+  static String resolveNetworkUrl(String url, {required double size}) {
+    var resolved = url.trim();
+    final lower = resolved.toLowerCase();
+    if (lower.contains('music.126.net')) {
+      if (lower.startsWith('http://')) {
+        resolved = 'https://${resolved.substring(7)}';
+      }
+      if (!resolved.toLowerCase().contains('param=')) {
+        final param = size <= 140 ? 'param=200y200' : 'param=600y600';
+        resolved = resolved.contains('?')
+            ? '$resolved&$param'
+            : '$resolved?$param';
+      }
+    }
+    return resolved;
+  }
+
   @override
   Widget build(BuildContext context) {
     final fallback = _buildPlaceholder();
     final path = localPath;
-    final uri = track?.albumArtUri;
+    final uri = track?.albumArtUri?.trim();
+    final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 2.0;
+    final decodePx = (size * dpr).round().clamp(64, 1024);
 
-    Widget artwork;
+    Widget? imageWidget;
     if (path != null && path.isNotEmpty && File(path).existsSync()) {
-      artwork = Image.file(
+      imageWidget = Image.file(
         File(path),
         width: size,
         height: size,
         fit: BoxFit.cover,
-        errorBuilder: (context, error, stackTrace) => fallback,
+        cacheWidth: decodePx,
+        cacheHeight: decodePx,
+        gaplessPlayback: true,
+        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
       );
-    } else if (uri != null && uri.startsWith('http')) {
-      artwork = Image.network(
-        uri,
+    } else if (uri != null &&
+        (uri.startsWith('http://') || uri.startsWith('https://'))) {
+      final resolved = resolveNetworkUrl(uri, size: size);
+      final headers = networkHeadersFor(resolved);
+      imageWidget = Image.network(
+        resolved,
+        headers: headers.isEmpty ? null : headers,
         width: size,
         height: size,
         fit: BoxFit.cover,
-        errorBuilder: (context, error, stackTrace) => fallback,
+        cacheWidth: decodePx,
+        cacheHeight: decodePx,
+        gaplessPlayback: true,
+        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
       );
-    } else {
-      artwork = fallback;
     }
 
     return SizedBox(
@@ -165,7 +204,13 @@ class CoverArtWidget extends StatelessWidget {
         children: [
           ClipRRect(
             borderRadius: BorderRadius.circular(borderRadius),
-            child: artwork,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                fallback,
+                if (imageWidget != null) imageWidget,
+              ],
+            ),
           ),
           if (showVinylRing)
             IgnorePointer(

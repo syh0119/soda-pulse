@@ -1004,69 +1004,16 @@ class _ImmersivePlayerPageState extends State<ImmersivePlayerPage>
                 );
               }
 
-              final three = <LyricLine?>[
-                five.lines[1],
-                five.lines[2],
-                five.lines[3],
-              ];
-
-              return AnimatedSwitcher(
-                duration: const Duration(milliseconds: 220),
-                switchInCurve: Curves.easeOut,
-                switchOutCurve: Curves.easeIn,
-                layoutBuilder: (currentChild, previousChildren) => Stack(
-                  alignment: Alignment.centerLeft,
-                  children: <Widget>[
-                    ...previousChildren,
-                    if (currentChild != null) currentChild,
-                  ],
+              return RollingPreviewLyrics(
+                key: ValueKey<String>(
+                  'pure_rolling_${store.currentTrack?.id ?? ''}',
                 ),
-                child: SizedBox(
-                  key: ValueKey<int>(five.activeIndex),
-                  width: double.infinity,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: List<Widget>.generate(3, (slot) {
-                      final lineObj = three[slot];
-                      final lineText = lineObj?.text.trim() ?? '';
-                      if (lineObj == null || lineText.isEmpty) {
-                        return const SizedBox(height: 2);
-                      }
-                      if (slot == 1) {
-                        return Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 3.0),
-                          child: KaraokeSingleLineSweep(
-                            line: lineObj,
-                            positionMs: effectivePos,
-                            style: TextStyle(
-                              fontSize: 17.5 * scale,
-                              fontWeight: FontWeight.w700,
-                              height: 1.30,
-                            ),
-                            activeColor: Colors.white,
-                            inactiveColor: Colors.white.withValues(alpha: 0.44),
-                            glowColor: store.accentColor.withValues(alpha: 0.45),
-                          ),
-                        );
-                      }
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 2.0),
-                        child: Text(
-                          lineText,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 13.5 * scale,
-                            fontWeight: FontWeight.w400,
-                            color: Colors.white.withValues(alpha: 0.52),
-                            height: 1.24,
-                          ),
-                        ),
-                      );
-                    }),
-                  ),
-                ),
+                lines: store.currentLyrics.lines,
+                activeIndex: five.activeIndex,
+                positionMs: effectivePos,
+                accentColor: store.accentColor,
+                visibleLines: 3,
+                scale: scale,
               );
             },
           ),
@@ -1094,6 +1041,7 @@ class _ImmersivePlayerPageState extends State<ImmersivePlayerPage>
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          _buildPlaybackErrorBanner(),
           SizedBox(
             height: 24 * scale,
             child: SliderTheme(
@@ -1148,11 +1096,11 @@ class _ImmersivePlayerPageState extends State<ImmersivePlayerPage>
               const Spacer(),
               GestureDetector(
                 behavior: HitTestBehavior.opaque,
-                onTap: () => showSoundEffectSheet(context, store),
+                onTap: () => showAudioQualitySheet(context, store),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                   child: Text(
-                    '高品质',
+                    store.preferredQualityLabel,
                     style: TextStyle(
                       fontSize: 12.5 * scale,
                       fontWeight: FontWeight.w500,
@@ -1433,6 +1381,7 @@ class _ImmersivePlayerPageState extends State<ImmersivePlayerPage>
                 scale: scale,
               ),
               const Spacer(),
+              _buildPlaybackErrorBanner(),
               _buildMetadataBlock(context, track, scale),
               SizedBox(height: 12 * scale),
               _buildFiveActionButtons(context, track, scale),
@@ -1563,67 +1512,16 @@ class _ImmersivePlayerPageState extends State<ImmersivePlayerPage>
                 );
               }
 
-              return AnimatedSwitcher(
-                duration: const Duration(milliseconds: 220),
-                switchInCurve: Curves.easeOut,
-                switchOutCurve: Curves.easeIn,
-                layoutBuilder: (currentChild, previousChildren) => Stack(
-                  alignment: Alignment.centerLeft,
-                  children: <Widget>[
-                    ...previousChildren,
-                    if (currentChild != null) currentChild,
-                  ],
+              return RollingPreviewLyrics(
+                key: ValueKey<String>(
+                  'free_rolling_${store.currentTrack?.id ?? ''}',
                 ),
-                child: SizedBox(
-                  key: ValueKey<int>(window.activeIndex),
-                  width: double.infinity,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: List<Widget>.generate(5, (slot) {
-                      final lineObj = window.lines[slot];
-                      final lineText = lineObj?.text.trim() ?? '';
-                      if (lineObj == null || lineText.isEmpty) {
-                        return const SizedBox(height: 2);
-                      }
-                      final bool isCenter = slot == 2;
-                      final bool isNear = slot == 1 || slot == 3;
-                      if (isCenter) {
-                        return Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 2.2),
-                          child: KaraokeSingleLineSweep(
-                            line: lineObj,
-                            positionMs: effectivePos,
-                            style: TextStyle(
-                              fontSize: 17.5 * scale,
-                              fontWeight: FontWeight.w700,
-                              height: 1.28,
-                            ),
-                            activeColor: Colors.white,
-                            inactiveColor: Colors.white.withValues(alpha: 0.44),
-                            glowColor: store.accentColor.withValues(alpha: 0.45),
-                          ),
-                        );
-                      }
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 1.4),
-                        child: Text(
-                          lineText,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 13.5 * scale,
-                            fontWeight: FontWeight.w400,
-                            color: Colors.white.withValues(
-                              alpha: isNear ? 0.56 : 0.44,
-                            ),
-                            height: 1.24,
-                          ),
-                        ),
-                      );
-                    }),
-                  ),
-                ),
+                lines: store.currentLyrics.lines,
+                activeIndex: window.activeIndex,
+                positionMs: effectivePos,
+                accentColor: store.accentColor,
+                visibleLines: 5,
+                scale: scale,
               );
             },
           ),
@@ -1656,13 +1554,13 @@ class _ImmersivePlayerPageState extends State<ImmersivePlayerPage>
               ),
               const SizedBox(width: 8),
               _buildCapsuleButton(
-                label: '高品质',
-                onTap: () => showSoundEffectSheet(context, store),
+                label: store.preferredQualityLabel,
+                onTap: () => showAudioQualitySheet(context, store),
               ),
               const SizedBox(width: 6),
               _buildCapsuleButton(
-                label: '原声',
-                onTap: _animateToLyricsTab,
+                label: store.eqPresetShortLabel,
+                onTap: () => showSoundEffectSheet(context, store),
               ),
             ],
           ),
@@ -1712,6 +1610,70 @@ class _ImmersivePlayerPageState extends State<ImmersivePlayerPage>
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildPlaybackErrorBanner() {
+    final error = store.playbackError;
+    if (error == null || error.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(22, 0, 22, 8),
+      child: GestureDetector(
+        onTap: store.retryCurrentTrack,
+        behavior: HitTestBehavior.opaque,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+          decoration: BoxDecoration(
+            color: const Color(0xFF5A1A22).withValues(alpha: 0.92),
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(
+              color: const Color(0xFFFF6B7A).withValues(alpha: 0.35),
+              width: 1,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.error_outline_rounded,
+                size: 16,
+                color: Color(0xFFFFB4BC),
+              ),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  error,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Color(0xFFFFE4E7),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFF6B7A).withValues(alpha: 0.24),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: const Text(
+                  '点击重试',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

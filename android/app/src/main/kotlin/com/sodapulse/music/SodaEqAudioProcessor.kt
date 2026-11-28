@@ -13,6 +13,7 @@ import kotlin.math.max
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlin.math.sqrt
 import kotlin.math.tanh
 
 @OptIn(UnstableApi::class)
@@ -27,6 +28,12 @@ class SodaEqAudioProcessor : BaseAudioProcessor() {
 
     @Volatile
     private var preGainDb = sPreGainDb
+
+    @Volatile
+    private var loudnessNormEnabled = sLoudnessNormEnabled
+
+    @Volatile
+    private var targetRms = sTargetRms
 
     @Volatile
     private var coeffsDirty = true
@@ -47,6 +54,15 @@ class SodaEqAudioProcessor : BaseAudioProcessor() {
     private var attackCoeff = 0.0
     private var releaseCoeff = 0.0
 
+    private var rmsSq = targetRms * targetRms
+    private var currentNormGain = 1.0
+    private var samplesSinceReset = 0L
+    private var fastConvergeSamples = 57600L
+    private var alphaFast = 0.0
+    private var alphaDown = 0.0
+    private var alphaUp = 0.0
+
+    private var rawFrameSamples = FloatArray(MAX_CHANNELS)
     private var frameSamples = FloatArray(MAX_CHANNELS)
 
     override fun onConfigure(
@@ -69,9 +85,15 @@ class SodaEqAudioProcessor : BaseAudioProcessor() {
 
         attackCoeff = exp(-1.0 / (0.001 * sr))
         releaseCoeff = exp(-1.0 / (0.080 * sr))
+        fastConvergeSamples = (FAST_CONVERGE_SECONDS * sr).toLong()
+        alphaFast = 1.0 - exp(-1.0 / (TAU_FAST * sr))
+        alphaDown = 1.0 - exp(-1.0 / (TAU_DOWN * sr))
+        alphaUp = 1.0 - exp(-1.0 / (TAU_UP * sr))
 
         bandDb = sBandDb.copyOf()
         preGainDb = sPreGainDb
+        loudnessNormEnabled = sLoudnessNormEnabled
+        targetRms = sTargetRms
         coeffsDirty = true
         sActive = this
 
@@ -101,18 +123,49 @@ class SodaEqAudioProcessor : BaseAudioProcessor() {
         val bytesPerSample = if (encoding == C.ENCODING_PCM_16BIT) 2 else 4
         val frameSize = chCount * bytesPerSample
         val frameCount = remaining / frameSize
+        val normActive = loudnessNormEnabled
 
         for (f in 0 until frameCount) {
-            var framePeak = 0.0f
-
+            var sumSq = 0.0
             for (ch in 0 until chCount) {
                 val raw = if (encoding == C.ENCODING_PCM_16BIT) {
                     inputBuffer.short.toFloat() / 32768.0f
                 } else {
                     inputBuffer.float
                 }
+                rawFrameSamples[ch] = raw
+                sumSq += raw.toDouble() * raw.toDouble()
+            }
 
-                var x = (raw * preGainLinear).toDouble()
+            var normGain = 1.0
+            if (normActive) {
+                val frameMeanSq = sumSq / chCount
+                if (frameMeanSq >= SILENCE_GATE_SQ) {
+                    val isFastPhase = samplesSinceReset < fastConvergeSamples
+                    val alphaRms = when {
+                        isFastPhase -> alphaFast
+                        frameMeanSq > rmsSq -> alphaDown
+                        else -> alphaUp
+                    }
+                    rmsSq += alphaRms * (frameMeanSq - rmsSq)
+
+                    val currentRms = sqrt(rmsSq.coerceAtLeast(SILENCE_GATE_SQ))
+                    val desiredGain = (targetRms / currentRms).coerceIn(MIN_NORM_GAIN, MAX_NORM_GAIN)
+                    val alphaGain = when {
+                        isFastPhase -> alphaFast
+                        desiredGain < currentNormGain -> alphaDown
+                        else -> alphaUp
+                    }
+                    currentNormGain += alphaGain * (desiredGain - currentNormGain)
+                    samplesSinceReset++
+                }
+                normGain = currentNormGain
+            }
+
+            var framePeak = 0.0f
+            val combinedPre = normGain * preGainLinear.toDouble()
+            for (ch in 0 until chCount) {
+                var x = rawFrameSamples[ch].toDouble() * combinedPre
                 val chZ1 = z1[ch]
                 val chZ2 = z2[ch]
 
@@ -186,6 +239,12 @@ class SodaEqAudioProcessor : BaseAudioProcessor() {
         coeffsDirty = true
     }
 
+    private fun updateLoudnessNorm(enabled: Boolean, targetLufs: Float) {
+        loudnessNormEnabled = enabled
+        targetRms = 10.0.pow(targetLufs.coerceIn(-24.0f, -6.0f).toDouble() / 20.0)
+        coeffsDirty = true
+    }
+
     private fun recomputeCoeffs() {
         coeffsDirty = false
         val gains = bandDb
@@ -225,7 +284,7 @@ class SodaEqAudioProcessor : BaseAudioProcessor() {
             a2[i] = (1.0 - alpha / a) / a0
         }
 
-        bypassed = allZero
+        bypassed = allZero && !loudnessNormEnabled
     }
 
     private fun resetFilterStates() {
@@ -234,6 +293,9 @@ class SodaEqAudioProcessor : BaseAudioProcessor() {
             z2[ch].fill(0.0)
         }
         envelope = 0.0
+        rmsSq = targetRms * targetRms
+        currentNormGain = 1.0
+        samplesSinceReset = 0L
     }
 
     private fun softClip(x: Float): Float {
@@ -254,6 +316,13 @@ class SodaEqAudioProcessor : BaseAudioProcessor() {
         private const val LIMIT = 0.96f
         private const val SOFT_CLIP_THRESHOLD = 0.99f
         private const val SOFT_CLIP_HEADROOM = 0.01f
+        private const val SILENCE_GATE_SQ = 1e-5
+        private const val MIN_NORM_GAIN = 0.28
+        private const val MAX_NORM_GAIN = 3.16
+        private const val FAST_CONVERGE_SECONDS = 1.2
+        private const val TAU_FAST = 0.25
+        private const val TAU_DOWN = 0.15
+        private const val TAU_UP = 1.5
 
         private val FREQS = doubleArrayOf(60.0, 230.0, 910.0, 3600.0, 14000.0)
         private val QS = doubleArrayOf(0.9, 1.0, 1.1, 1.15, 0.8)
@@ -263,6 +332,12 @@ class SodaEqAudioProcessor : BaseAudioProcessor() {
 
         @Volatile
         private var sPreGainDb = 0.0f
+
+        @Volatile
+        private var sLoudnessNormEnabled = true
+
+        @Volatile
+        private var sTargetRms = 10.0.pow(-14.0 / 20.0)
 
         @Volatile
         private var sActive: SodaEqAudioProcessor? = null
@@ -277,6 +352,13 @@ class SodaEqAudioProcessor : BaseAudioProcessor() {
             sBandDb = copy
             sPreGainDb = clampedPre
             sActive?.updateParams(copy, clampedPre)
+        }
+
+        fun setLoudnessNorm(enabled: Boolean, targetLufs: Float = -14.0f) {
+            val clampedLufs = targetLufs.coerceIn(-24.0f, -6.0f)
+            sLoudnessNormEnabled = enabled
+            sTargetRms = 10.0.pow(clampedLufs.toDouble() / 20.0)
+            sActive?.updateLoudnessNorm(enabled, clampedLufs)
         }
 
         fun bypass() {

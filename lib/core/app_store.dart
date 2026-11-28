@@ -10,6 +10,7 @@ import 'package:soda_pulse/lyrics/lyric_parser.dart';
 import 'package:soda_pulse/models/track.dart';
 import 'package:soda_pulse/plugin/plugin_manager.dart';
 import 'package:soda_pulse/services/native_bridge.dart';
+import 'package:soda_pulse/services/online_music_catalog.dart';
 
 enum PlayMode {
   sequence('顺序播放'),
@@ -153,6 +154,59 @@ class SoundFxPresets {
   }
 }
 
+class AudioQualityOption {
+  const AudioQualityOption({
+    required this.id,
+    required this.label,
+    required this.title,
+    required this.subtitle,
+    required this.badge,
+  });
+
+  final String id;
+  final String label;
+  final String title;
+  final String subtitle;
+  final String badge;
+}
+
+class AudioQualityOptions {
+  const AudioQualityOptions._();
+
+  static const List<AudioQualityOption> all = <AudioQualityOption>[
+    AudioQualityOption(
+      id: '128k',
+      label: '标准',
+      title: '标准音质',
+      subtitle: '128kbps · 省流流畅',
+      badge: 'STD',
+    ),
+    AudioQualityOption(
+      id: '320k',
+      label: '高品质',
+      title: '高品质',
+      subtitle: '320kbps · 均衡推荐',
+      badge: 'HQ',
+    ),
+    AudioQualityOption(
+      id: 'flac',
+      label: '无损',
+      title: '无损音质',
+      subtitle: 'FLAC · 母带级细节',
+      badge: 'SQ',
+    ),
+  ];
+
+  static AudioQualityOption byId(String id) {
+    for (final option in all) {
+      if (option.id == id) {
+        return option;
+      }
+    }
+    return all[1];
+  }
+}
+
 class UserPlaylist {
   const UserPlaylist({
     required this.id,
@@ -292,14 +346,36 @@ class AppStore extends ChangeNotifier {
   String _eqPresetId = 'flat';
   List<double> _eqGains = <double>[0.0, 0.0, 0.0, 0.0, 0.0];
   double _eqPreGain = 0.0;
+  String _preferredQuality = '320k';
+  bool _loudnessNormEnabled = true;
 
   final List<MusicSourcePlugin> _plugins = <MusicSourcePlugin>[];
   final Map<String, Map<String, dynamic>> _pluginTestResults =
       <String, Map<String, dynamic>>{};
   final Map<String, Track> _onlineTrackCache = <String, Track>{};
+  final Map<String, OnlinePlaylistDetail> _onlineChartCache =
+      <String, OnlinePlaylistDetail>{};
   final Map<String, String> _coverPathCache = <String, String>{};
   final Map<String, Color> _coverColorCache = <String, Color>{};
   final Set<String> _coverLoadingIds = <String>{};
+  static const int _urlTtlMs = 10 * 60 * 1000;
+  final Map<String, int> _resolvedUrlAtMs = <String, int>{};
+  final Set<String> _autoRetriedTrackIds = <String>{};
+  String? _playbackError;
+  int _playRequestSeq = 0;
+
+  String? get playbackError => _playbackError;
+
+  static bool isSnapshotForActiveTrack(
+    PlaybackSnapshot snap,
+    String? activeTrackId,
+  ) {
+    final snapId = snap.trackId;
+    if (snapId == null || snapId.isEmpty || activeTrackId == null || activeTrackId.isEmpty) {
+      return true;
+    }
+    return snapId == activeTrackId;
+  }
 
   NativePlayerBridge get bridge => _bridge;
   List<Track> get library => List<Track>.unmodifiable(_library);
@@ -380,6 +456,15 @@ class AppStore extends ChangeNotifier {
   bool get sleepAfterCurrentTrack => _sleepAfterCurrentTrack;
 
   Set<String> get favoriteIds => Set<String>.unmodifiable(_favoriteIds);
+  Track? trackById(String id) {
+    final online = _onlineTrackCache[id];
+    if (online != null) return online;
+    for (final t in _library) {
+      if (t.id == id) return t;
+    }
+    return null;
+  }
+
   List<Track> get favoriteTracks {
     final all = <String, Track>{
       for (final t in _library) t.id: t,
@@ -393,8 +478,26 @@ class AppStore extends ChangeNotifier {
   int get totalListenSeconds => _totalListenSeconds;
   Map<int, int> get hourlyCounts => Map<int, int>.unmodifiable(_hourlyCounts);
   List<String> get recentSearches => List<String>.unmodifiable(_recentSearches);
+  MusicSourcePlugin? get activeLxPlugin {
+    for (final p in _plugins) {
+      if (p.enabled && p.type == PluginType.lx) return p;
+    }
+    return null;
+  }
+
+  MusicSourcePlugin? get primaryOnlinePlugin {
+    for (final p in _plugins) {
+      if (p.enabled) return p;
+    }
+    return null;
+  }
 
   String get eqPresetId => _eqPresetId;
+  String get eqPresetShortLabel => SoundFxPresets.byId(_eqPresetId).name;
+  String get preferredQuality => _preferredQuality;
+  String get preferredQualityLabel =>
+      AudioQualityOptions.byId(_preferredQuality).label;
+  bool get loudnessNormEnabled => _loudnessNormEnabled;
   List<double> get eqGains => List<double>.unmodifiable(_eqGains);
   double get eqPreGain => _eqPreGain;
   List<MusicSourcePlugin> get plugins =>
@@ -409,8 +512,14 @@ class AppStore extends ChangeNotifier {
 
     await _stateSub?.cancel();
     _stateSub = _bridge.stateStream.listen((snap) {
+      if (!isSnapshotForActiveTrack(snap, currentTrack?.id)) {
+        return;
+      }
       _snapshot = snap;
       _snapshotTimestampMs = DateTime.now().millisecondsSinceEpoch;
+      if (snap.isPlaying && _playbackError != null) {
+        _playbackError = null;
+      }
       notifyListeners();
     });
 
@@ -421,6 +530,7 @@ class AppStore extends ChangeNotifier {
     await _bridge.requestPermissions();
     await rescanLibrary();
     await _applyEqToNative();
+    await _bridge.setLoudnessNorm(_loudnessNormEnabled);
     unawaited(_bootstrapEnabledPlugins());
 
     if (_autoPlayOnLaunch && _queue.isNotEmpty) {
@@ -481,6 +591,22 @@ class AppStore extends ChangeNotifier {
         if (track != null) {
           await toggleFavorite(track);
         }
+      case 'error':
+        final track = currentTrack;
+        if (track != null &&
+            track.isOnlinePluginTrack &&
+            _autoRetriedTrackIds.add(track.id)) {
+          await playTrackFromQueue(
+            _currentIndex,
+            forceReResolve: true,
+            preferredQuality: '128k',
+          );
+          return;
+        }
+        _playbackError = '音频流加载失败，点击重试';
+        notifyListeners();
+      case 'retry_current':
+        await retryCurrentTrack();
     }
   }
 
@@ -549,11 +675,79 @@ class AppStore extends ChangeNotifier {
     }
   }
 
-  Future<void> playTrackFromQueue(int index) async {
+  Future<void> retryCurrentTrack() async {
+    _playbackError = null;
+    notifyListeners();
+    if (_currentIndex >= 0 && _currentIndex < _queue.length) {
+      await playTrackFromQueue(
+        _currentIndex,
+        forceReResolve: true,
+        preferredQuality: _preferredQuality,
+      );
+    }
+  }
+
+  Future<void> setLoudnessNormEnabled(bool enabled) async {
+    if (_loudnessNormEnabled == enabled) return;
+    _loudnessNormEnabled = enabled;
+    await _bridge.setLoudnessNorm(enabled);
+    notifyListeners();
+    await _savePrefs();
+  }
+
+  Future<void> setPreferredQuality(String quality) async {
+    final normalized = AudioQualityOptions.byId(quality).id;
+    if (_preferredQuality == normalized) return;
+    _preferredQuality = normalized;
+    notifyListeners();
+    unawaited(_savePrefs());
+
+    final track = currentTrack;
+    if (track != null &&
+        track.isOnlinePluginTrack &&
+        _currentIndex >= 0 &&
+        _currentIndex < _queue.length) {
+      final resumeMs = positionMs;
+      await playTrackFromQueue(
+        _currentIndex,
+        forceReResolve: true,
+        preferredQuality: normalized,
+      );
+      if (resumeMs > 1500 && _playbackError == null) {
+        await seekTo(resumeMs);
+      }
+    }
+  }
+
+  Future<void> playTrackFromQueue(
+    int index, {
+    bool forceReResolve = false,
+    String? preferredQuality,
+  }) async {
     if (index < 0 || index >= _queue.length) return;
+    final int reqSeq = ++_playRequestSeq;
+    final String? previousTrackId = _snapshot.trackId;
     _currentIndex = index;
     var track = _queue[index];
     _lastPlayedTrackId = track.id;
+    _playbackError = null;
+    if (!forceReResolve) {
+      _autoRetriedTrackIds.remove(track.id);
+    }
+
+    if (previousTrackId != track.id) {
+      unawaited(_bridge.pause());
+      _snapshot = PlaybackSnapshot(
+        trackId: track.id,
+        isPlaying: false,
+        positionMs: 0,
+        durationMs: track.durationMs,
+        buffering: track.isOnlinePluginTrack,
+        playbackState: track.isOnlinePluginTrack ? 2 : 1,
+      );
+      _snapshotTimestampMs = DateTime.now().millisecondsSinceEpoch;
+      notifyListeners();
+    }
 
     if (track.isOnlinePluginTrack) {
       _onlineTrackCache[track.id] = track;
@@ -562,40 +756,80 @@ class AppStore extends ChangeNotifier {
     String resolvedRawLyric = '';
     String resolvedTranslation = '';
     String resolvedRoma = '';
-    if (track.isOnlinePluginTrack && track.uri.isEmpty && track.rawPluginData != null) {
-      final urlRes = await _bridge.pluginResolveUrl(
-        track.pluginId!,
-        track.rawPluginData!,
-        quality: 'standard',
-        source: track.sourcePlatform ?? '',
-      );
-      final resolvedUrl = (urlRes['url'] ?? '').toString().trim();
-      Map<String, String>? resolvedHeaders;
-      if (urlRes['headers'] is Map) {
-        resolvedHeaders = <String, String>{};
-        (urlRes['headers'] as Map).forEach((k, v) {
-          if (k != null && v != null) {
-            resolvedHeaders![k.toString()] = v.toString();
-          }
-        });
-      }
-      if (resolvedUrl.isNotEmpty) {
-        track = track.copyWith(uri: resolvedUrl, headers: resolvedHeaders);
-        _queue[index] = track;
-        _onlineTrackCache[track.id] = track;
+    final int nowMs = DateTime.now().millisecondsSinceEpoch;
+    final bool needsResolveUrl = track.isOnlinePluginTrack &&
+        track.rawPluginData != null &&
+        (forceReResolve ||
+            track.uri.isEmpty ||
+            (nowMs - (_resolvedUrlAtMs[track.id] ?? 0) > _urlTtlMs));
+    var urlResolveError = '';
+    if (track.isOnlinePluginTrack && track.rawPluginData != null) {
+      if (needsResolveUrl) {
+        final pluginIdx = _plugins.indexWhere((p) => p.id == track.pluginId);
+        if (pluginIdx >= 0) {
+          final p = _plugins[pluginIdx];
+          await _bridge.pluginLoad(p.id, p.script, p.type.name);
+          if (reqSeq != _playRequestSeq) return;
+        }
+        final urlRes = await _bridge.pluginResolveUrl(
+          track.pluginId!,
+          track.rawPluginData!,
+          quality: preferredQuality ?? _preferredQuality,
+          source: track.sourcePlatform ?? '',
+        );
+        if (reqSeq != _playRequestSeq) return;
+        final resolvedUrl = (urlRes['url'] ?? '').toString().trim();
+        Map<String, String>? resolvedHeaders;
+        if (urlRes['headers'] is Map) {
+          resolvedHeaders = <String, String>{};
+          (urlRes['headers'] as Map).forEach((k, v) {
+            if (k != null && v != null) {
+              resolvedHeaders![k.toString()] = v.toString();
+            }
+          });
+        }
+        if (resolvedUrl.isNotEmpty) {
+          _resolvedUrlAtMs[track.id] = nowMs;
+          _playbackError = null;
+          track = track.copyWith(uri: resolvedUrl, headers: resolvedHeaders);
+          _queue[index] = track;
+          _onlineTrackCache[track.id] = track;
+        } else {
+          urlResolveError = (urlRes['error'] ?? '').toString().trim();
+        }
+      } else {
+        _playbackError = null;
       }
       final lyricRes = await _bridge.pluginResolveLyric(
         track.pluginId!,
         track.rawPluginData!,
       );
+      if (reqSeq != _playRequestSeq) return;
       resolvedRawLyric = (lyricRes['raw'] ?? '').toString();
       resolvedTranslation = (lyricRes['translation'] ?? '').toString();
-      _lyricSourceLabel = 'PLUGIN';
-    } else {
+      if (resolvedRawLyric.trim().isNotEmpty) {
+        _lyricSourceLabel = 'PLUGIN';
+      } else if (track.sourcePlatform == 'wy') {
+        try {
+          final rawJson = jsonDecode(track.rawPluginData!);
+          final songId = (rawJson is Map ? rawJson['id']?.toString() : null) ?? '';
+          if (songId.isNotEmpty) {
+            final wyLyric = await OnlineMusicCatalog.fetchWyLyric(songId);
+            if (reqSeq != _playRequestSeq) return;
+            resolvedRawLyric = wyLyric.raw;
+            resolvedTranslation = wyLyric.translation;
+            if (resolvedRawLyric.trim().isNotEmpty) {
+              _lyricSourceLabel = 'ONLINE';
+            }
+          }
+        } catch (_) {}
+      }
+    } else if (!track.isOnlinePluginTrack) {
       final lyricMap = await _bridge.readTrackLyrics(
         filePath: track.filePath,
         uri: track.uri,
       );
+      if (reqSeq != _playRequestSeq) return;
       resolvedRawLyric = (lyricMap['raw'] ??
               lyricMap['lyric'] ??
               lyricMap['lrc'] ??
@@ -644,6 +878,27 @@ class AppStore extends ChangeNotifier {
       _history.removeRange(500, _history.length);
     }
 
+    if (track.isOnlinePluginTrack && needsResolveUrl && track.uri.isEmpty) {
+      await _bridge.pause();
+      if (reqSeq != _playRequestSeq) return;
+      _snapshot = PlaybackSnapshot(
+        trackId: track.id,
+        isPlaying: false,
+        positionMs: 0,
+        durationMs: track.durationMs,
+        buffering: false,
+        playbackState: 1,
+      );
+      _snapshotTimestampMs = DateTime.now().millisecondsSinceEpoch;
+      _playbackError = urlResolveError.isNotEmpty
+          ? '音源解析失败 ($urlResolveError)，点击重试'
+          : '音源解析失败，点击重试';
+      notifyListeners();
+      unawaited(ensureCoverLoaded(track));
+      unawaited(_savePrefs());
+      return;
+    }
+    _playbackError = null;
     notifyListeners();
     await _bridge.loadAndPlay(
       track,
@@ -728,6 +983,13 @@ class AppStore extends ChangeNotifier {
     if (isPlaying) {
       await _bridge.pause();
     } else {
+      final track = currentTrack;
+      if (_playbackError != null ||
+          _snapshot.playbackState == 1 ||
+          (track != null && track.isOnlinePluginTrack && track.uri.isEmpty)) {
+        await retryCurrentTrack();
+        return;
+      }
       await _bridge.play();
     }
   }
@@ -990,7 +1252,19 @@ class AppStore extends ChangeNotifier {
     final idx = _plugins.indexWhere((p) => p.id == id);
     if (idx < 0) return const <String, dynamic>{'ok': false, 'error': '插件不存在'};
     final p = _plugins[idx];
-    await _bridge.pluginLoad(p.id, p.script, p.type.name);
+    final loadRes = await _bridge.pluginLoad(p.id, p.script, p.type.name);
+    if (loadRes['ok'] != true) {
+      final errMsg = loadRes['error']?.toString() ?? '插件加载失败';
+      final failResult = <String, dynamic>{
+        'ok': false,
+        'latencyMs': 0,
+        'summary': errMsg,
+        'error': errMsg,
+      };
+      _pluginTestResults[id] = failResult;
+      notifyListeners();
+      return failResult;
+    }
     final result = await _bridge.pluginTest(p.id);
     _pluginTestResults[id] = result;
     notifyListeners();
@@ -1000,11 +1274,14 @@ class AppStore extends ChangeNotifier {
   Future<List<Track>> searchOnlineTracks(String query) async {
     final trimmed = query.trim();
     if (trimmed.isEmpty) return const <Track>[];
+    addSearchQuery(trimmed);
     final enabled = _plugins.where((p) => p.enabled).toList();
     if (enabled.isEmpty) return const <Track>[];
+
     final results = <Track>[];
     final seen = <String>{};
-    for (final p in enabled) {
+
+    for (final p in enabled.where((e) => e.type == PluginType.musicFree)) {
       await _bridge.pluginLoad(p.id, p.script, p.type.name);
       final tracks = await _bridge.pluginSearch(p.id, trimmed, page: 1);
       for (final t in tracks) {
@@ -1014,7 +1291,63 @@ class AppStore extends ChangeNotifier {
         }
       }
     }
+
+    final lxPlugin = activeLxPlugin ?? primaryOnlinePlugin;
+    if (lxPlugin != null) {
+      try {
+        final wyTracks = await OnlineMusicCatalog.searchWyTracks(
+          trimmed,
+          pluginId: lxPlugin.id,
+        );
+        for (final t in wyTracks) {
+          if (seen.add(t.id)) {
+            _onlineTrackCache[t.id] = t;
+            results.add(t);
+          }
+        }
+      } catch (_) {}
+    }
+
     return results;
+  }
+
+  Future<OnlinePlaylistDetail> fetchOnlineChart(String playlistId) async {
+    final cached = _onlineChartCache[playlistId];
+    if (cached != null && cached.tracks.isNotEmpty) {
+      return cached;
+    }
+    final plugin = activeLxPlugin ?? primaryOnlinePlugin;
+    if (plugin == null) {
+      throw const FormatException('请先导入并启用一个音源插件');
+    }
+    final detail = await OnlineMusicCatalog.fetchWyPlaylist(
+      playlistId,
+      pluginId: plugin.id,
+    );
+    for (final t in detail.tracks) {
+      _onlineTrackCache[t.id] = t;
+    }
+    _onlineChartCache[playlistId] = detail;
+    return detail;
+  }
+
+  Future<UserPlaylist> importNeteasePlaylist(String urlOrId) async {
+    final playlistId = OnlineMusicCatalog.extractPlaylistId(urlOrId);
+    if (playlistId == null) {
+      throw const FormatException('无法识别的网易云歌单链接或 ID');
+    }
+    final detail = await fetchOnlineChart(playlistId);
+    if (detail.tracks.isEmpty) {
+      throw const FormatException('该歌单暂无可导入曲目');
+    }
+    final plName = detail.name.trim().isNotEmpty
+        ? detail.name.trim()
+        : '网易云歌单 ($playlistId)';
+    final plId = await createPlaylist(plName);
+    for (final t in detail.tracks) {
+      await addTrackToPlaylist(plId, t);
+    }
+    return _playlists.firstWhere((p) => p.id == plId);
   }
 
   Future<int> importOnlinePlaylistFromPlugin(
@@ -1221,8 +1554,62 @@ class AppStore extends ChangeNotifier {
   }
 
   Future<MusicSourcePlugin> importPluginFromUrl(String url) async {
+    final res = await importPluginsFromUrl(url);
+    if (res.imported.isNotEmpty) {
+      return res.imported.first;
+    }
+    throw FormatException(res.firstError ?? '从链接导入插件失败');
+  }
+
+  Future<PluginImportResult> importPluginsFromUrl(String url) async {
     final raw = await PluginFetcher.fetchScriptFromUrl(url);
-    return importPluginFromText(raw, sourceUrl: url);
+    final trimmed = raw.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      final manifestUrls = PluginQrParser.extractManifestUrls(trimmed);
+      if (manifestUrls.isNotEmpty) {
+        return _importPluginUrlBatch(manifestUrls);
+      }
+    }
+    final plugin = await importPluginFromText(raw, sourceUrl: url);
+    return PluginImportResult(imported: <MusicSourcePlugin>[plugin]);
+  }
+
+  Future<PluginImportResult> importPluginsFromQrPayload(String rawQr) async {
+    final parsed = PluginQrParser.parse(rawQr);
+    switch (parsed.kind) {
+      case PluginQrPayloadKind.inlineScript:
+        final plugin = await importPluginFromText(parsed.inlineScript!);
+        return PluginImportResult(imported: <MusicSourcePlugin>[plugin]);
+      case PluginQrPayloadKind.scriptUrl:
+        return importPluginsFromUrl(parsed.urls.first);
+      case PluginQrPayloadKind.manifestJson:
+      case PluginQrPayloadKind.urlList:
+        return _importPluginUrlBatch(parsed.urls);
+    }
+  }
+
+  Future<PluginImportResult> _importPluginUrlBatch(List<String> urls) async {
+    final imported = <MusicSourcePlugin>[];
+    int failedCount = 0;
+    String? firstError;
+    for (final itemUrl in urls) {
+      try {
+        final raw = await PluginFetcher.fetchScriptFromUrl(itemUrl);
+        final plugin = await importPluginFromText(raw, sourceUrl: itemUrl);
+        imported.add(plugin);
+      } catch (e) {
+        failedCount++;
+        firstError ??= e.toString().replaceFirst('FormatException: ', '');
+      }
+    }
+    if (imported.isEmpty && firstError != null) {
+      throw FormatException(firstError);
+    }
+    return PluginImportResult(
+      imported: imported,
+      failedCount: failedCount,
+      firstError: firstError,
+    );
   }
 
   Future<MusicSourcePlugin?> importPluginFromFile() async {
@@ -1302,6 +1689,8 @@ class AppStore extends ChangeNotifier {
       'eqPresetId': _eqPresetId,
       'eqGains': _eqGains,
       'eqPreGain': _eqPreGain,
+      'preferredQuality': _preferredQuality,
+      'loudnessNormEnabled': _loudnessNormEnabled,
     };
     return const JsonEncoder.withIndent('  ').convert(payload);
   }
@@ -1413,10 +1802,18 @@ class AppStore extends ChangeNotifier {
     }
 
     final eqId = decoded['eqPresetId']?.toString();
+    final qualityRaw = decoded['preferredQuality']?.toString();
     final eqGainsRaw = decoded['eqGains'];
     final eqPreRaw = (decoded['eqPreGain'] as num?)?.toDouble();
     if (eqId != null) {
       _eqPresetId = eqId;
+    }
+    if (qualityRaw != null && qualityRaw.isNotEmpty) {
+      _preferredQuality = AudioQualityOptions.byId(qualityRaw).id;
+    }
+    final loudnessRaw = decoded['loudnessNormEnabled'];
+    if (loudnessRaw is bool) {
+      _loudnessNormEnabled = loudnessRaw;
     }
     if (eqGainsRaw is List && eqGainsRaw.length == 5) {
       _eqGains = eqGainsRaw
@@ -1560,6 +1957,13 @@ class AppStore extends ChangeNotifier {
       }
 
       _eqPresetId = (decoded['eqPresetId'] ?? 'flat').toString();
+      final qRaw = decoded['preferredQuality']?.toString();
+      if (qRaw != null && qRaw.isNotEmpty) {
+        _preferredQuality = AudioQualityOptions.byId(qRaw).id;
+      }
+      if (decoded['loudnessNormEnabled'] is bool) {
+        _loudnessNormEnabled = decoded['loudnessNormEnabled'] as bool;
+      }
       final gains = decoded['eqGains'];
       if (gains is List && gains.length == 5) {
         _eqGains = gains
@@ -1619,8 +2023,13 @@ class AppStore extends ChangeNotifier {
       'eqPresetId': _eqPresetId,
       'eqGains': _eqGains,
       'eqPreGain': _eqPreGain,
+      'preferredQuality': _preferredQuality,
+      'loudnessNormEnabled': _loudnessNormEnabled,
       'plugins': _plugins.map((p) => p.toJson()).toList(),
-      'onlineTracks': _onlineTrackCache.values.take(300).map((t) => t.toMap()).toList(),
+      'onlineTracks': _onlineTrackCache.values
+          .take(300)
+          .map((t) => (t.isOnlinePluginTrack ? t.copyWith(uri: '') : t).toMap())
+          .toList(),
     };
     await _bridge.savePreferences(<String, dynamic>{
       _prefsKey: jsonEncode(data),

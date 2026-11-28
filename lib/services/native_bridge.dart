@@ -51,6 +51,7 @@ class PlaybackSnapshot {
   final int durationMs;
   final double speed;
   final bool buffering;
+  final int playbackState;
   final String? trackId;
   final int updatedAtElapsedMs;
 
@@ -60,6 +61,7 @@ class PlaybackSnapshot {
     this.durationMs = 0,
     this.speed = 1.0,
     this.buffering = false,
+    this.playbackState = 1,
     this.trackId,
     this.updatedAtElapsedMs = 0,
   });
@@ -92,6 +94,7 @@ class PlaybackSnapshot {
       durationMs: (map['durationMs'] as num?)?.toInt() ?? 0,
       speed: (map['speed'] as num?)?.toDouble() ?? 1.0,
       buffering: (map['buffering'] as bool?) ?? false,
+      playbackState: (map['playbackState'] as num?)?.toInt() ?? 1,
       trackId: map['trackId']?.toString(),
       updatedAtElapsedMs: (map['updatedAtElapsedMs'] as num?)?.toInt() ??
           DateTime.now().millisecondsSinceEpoch,
@@ -104,6 +107,7 @@ class PlaybackSnapshot {
     int? durationMs,
     double? speed,
     bool? buffering,
+    int? playbackState,
     String? trackId,
     int? updatedAtElapsedMs,
   }) {
@@ -113,6 +117,7 @@ class PlaybackSnapshot {
       durationMs: durationMs ?? this.durationMs,
       speed: speed ?? this.speed,
       buffering: buffering ?? this.buffering,
+      playbackState: playbackState ?? this.playbackState,
       trackId: trackId ?? this.trackId,
       updatedAtElapsedMs: updatedAtElapsedMs ?? this.updatedAtElapsedMs,
     );
@@ -125,6 +130,7 @@ class PlaybackSnapshot {
       'durationMs': durationMs,
       'speed': speed,
       'buffering': buffering,
+      'playbackState': playbackState,
       'trackId': trackId,
       'updatedAtElapsedMs': updatedAtElapsedMs,
     };
@@ -573,6 +579,19 @@ class NativePlayerBridge extends ChangeNotifier {
     );
   }
 
+  Future<void> setLoudnessNorm(
+    bool enabled, {
+    double targetLufs = -14.0,
+  }) async {
+    await _methodChannel.invokeMethod<void>(
+      'setLoudnessNorm',
+      <String, dynamic>{
+        'enabled': enabled,
+        'targetLufs': targetLufs,
+      },
+    );
+  }
+
   Future<void> setPlaybackSpeed(double speed) async {
     await _methodChannel.invokeMethod<void>(
       'setPlaybackSpeed',
@@ -620,6 +639,32 @@ class NativePlayerBridge extends ChangeNotifier {
         'content': (result['content'] ?? '').toString(),
       };
     }
+    return null;
+  }
+
+  Future<String?> scanQrCode() async {
+    final String? result =
+        await _methodChannel.invokeMethod<String>('scanQrCode');
+    if (result == null) return null;
+    final trimmed = result.trim();
+    return trimmed.isEmpty ? null : trimmed;
+  }
+
+  Future<String?> pickQrImage() async {
+    final String? result =
+        await _methodChannel.invokeMethod<String>('pickQrImage');
+    if (result == null) return null;
+    final trimmed = result.trim();
+    return trimmed.isEmpty ? null : trimmed;
+  }
+
+  Future<Uint8List?> generateQrPng(String text, {int size = 640}) async {
+    final dynamic result = await _methodChannel.invokeMethod<dynamic>(
+      'generateQrPng',
+      <String, dynamic>{'text': text, 'size': size},
+    );
+    if (result is Uint8List) return result;
+    if (result is List<int>) return Uint8List.fromList(result);
     return null;
   }
 

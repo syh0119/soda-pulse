@@ -34,6 +34,8 @@ class MainActivity : FlutterActivity() {
         private const val PREFS_NAME = "sodapulse_prefs"
         private const val REQUEST_PERMISSIONS_CODE = 1001
         private const val REQUEST_PICK_TEXT_FILE = 1002
+        private const val REQUEST_SCAN_QR = 1003
+        private const val REQUEST_PICK_QR_IMAGE = 1004
     }
 
     private val executor = Executors.newCachedThreadPool()
@@ -45,6 +47,8 @@ class MainActivity : FlutterActivity() {
     private var isBinding = false
     private var pendingPermissionResult: MethodChannel.Result? = null
     private var pendingPickFileResult: MethodChannel.Result? = null
+    private var pendingScanQrResult: MethodChannel.Result? = null
+    private var pendingPickQrImageResult: MethodChannel.Result? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -318,6 +322,13 @@ class MainActivity : FlutterActivity() {
                 result.success(true)
             }
 
+            "setLoudnessNorm" -> {
+                val enabled = call.argument<Boolean>("enabled") ?: true
+                val targetLufs = (call.argument<Number>("targetLufs"))?.toFloat() ?: -14.0f
+                SodaEqAudioProcessor.setLoudnessNorm(enabled, targetLufs)
+                result.success(true)
+            }
+
             "setPlaybackSpeed" -> {
                 val speed = (call.argument<Number>("speed"))?.toFloat() ?: 1.0f
                 withPlaybackService(startForeground = false) { service ->
@@ -373,6 +384,44 @@ class MainActivity : FlutterActivity() {
                 }
                 @Suppress("DEPRECATION")
                 startActivityForResult(intent, REQUEST_PICK_TEXT_FILE)
+            }
+
+            "scanQrCode" -> {
+                pendingScanQrResult?.success(null)
+                pendingScanQrResult = result
+                val intent = Intent(this, QrScannerActivity::class.java)
+                @Suppress("DEPRECATION")
+                startActivityForResult(intent, REQUEST_SCAN_QR)
+            }
+
+            "pickQrImage" -> {
+                pendingPickQrImageResult?.success(null)
+                pendingPickQrImageResult = result
+                val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                    type = "image/*"
+                }
+                @Suppress("DEPRECATION")
+                startActivityForResult(
+                    Intent.createChooser(intent, "选择二维码图片"),
+                    REQUEST_PICK_QR_IMAGE
+                )
+            }
+
+            "generateQrPng" -> {
+                val text = call.argument<String>("text") ?: ""
+                val size = (call.argument<Number>("size")?.toInt() ?: 640).coerceIn(128, 1280)
+                if (text.isBlank()) {
+                    result.error("INVALID_QR_TEXT", "二维码内容不能为空", null)
+                    return
+                }
+                executor.execute {
+                    try {
+                        val png = QrCodecHelper.generateQrPng(text, size)
+                        mainHandler.post { result.success(png) }
+                    } catch (e: Exception) {
+                        mainHandler.post { result.error("QR_ENCODE_ERROR", e.message, null) }
+                    }
+                }
             }
 
             "exportTextFile" -> {
@@ -608,6 +657,39 @@ class MainActivity : FlutterActivity() {
                     mainHandler.post { res.error("READ_FILE_ERROR", e.message, null) }
                 }
             }
+        } else if (requestCode == REQUEST_SCAN_QR) {
+            val res = pendingScanQrResult
+            pendingScanQrResult = null
+            if (res == null) return
+            val qrText = if (resultCode == Activity.RESULT_OK) {
+                data?.getStringExtra(QrScannerActivity.EXTRA_QR_TEXT)
+            } else {
+                null
+            }
+            res.success(qrText)
+        } else if (requestCode == REQUEST_PICK_QR_IMAGE) {
+            val res = pendingPickQrImageResult
+            pendingPickQrImageResult = null
+            if (res == null) return
+            val uri = if (resultCode == Activity.RESULT_OK) data?.data else null
+            if (uri == null) {
+                res.success(null)
+                return
+            }
+            executor.execute {
+                try {
+                    val decoded = QrCodecHelper.decodeQrFromUri(applicationContext, uri)
+                    if (!decoded.isNullOrBlank()) {
+                        mainHandler.post { res.success(decoded) }
+                    } else {
+                        mainHandler.post {
+                            res.error("QR_NOT_FOUND", "未在图片中识别到有效二维码", null)
+                        }
+                    }
+                } catch (e: Exception) {
+                    mainHandler.post { res.error("QR_DECODE_ERROR", e.message, null) }
+                }
+            }
         }
     }
 
@@ -615,6 +697,8 @@ class MainActivity : FlutterActivity() {
         pendingServiceActions.clear()
         pendingPermissionResult = null
         pendingPickFileResult = null
+        pendingScanQrResult = null
+        pendingPickQrImageResult = null
         if (isBound || isBinding) {
             try {
                 unbindService(serviceConnection)
